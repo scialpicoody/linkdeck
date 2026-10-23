@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "4.3.3",
+    "monaco-editor": "0.57.0",
     "mygo-runtime": "^0.6.3",
     "react": "19.3.1",
     "react-dom": "19.3.1",
