@@ -6,6 +6,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/egoist/mygo v0.6.3
 	github.com/stretchr/testify v1.12.1
+	github.com/yuin/gopher-lua v1.1.2
 	go.bug.st/serial v1.8.0
 )
 
