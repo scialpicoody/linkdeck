@@ -1,78 +1,82 @@
+@import "tailwindcss";
+
+/*
+ * Hand-ported shadcn-style design tokens (no shadcn CLI — see
+ * docs/research/frontend-stack.md). Hex/sRGB values (not oklch) so old
+ * WebKitGTK engines still resolve them; light/dark switching is OS-driven
+ * via `prefers-color-scheme` to match the native window background in
+ * main.go (`light-dark(...)`), with no JS theme provider.
+ */
 :root {
   color-scheme: light dark;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  --bg: #f6f7f9;
-  --fg: #16181d;
-  --muted: #6b7280;
+
+  --background: #f6f7f9;
+  --foreground: #16181d;
   --card: #ffffff;
-  --accent: #3b82f6;
+  --card-foreground: #16181d;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --secondary: #e9ebef;
+  --secondary-foreground: #16181d;
+  --muted: #eef0f3;
+  --muted-foreground: #6b7280;
+  --accent: #e5edfd;
+  --accent-foreground: #1d4ed8;
+  --border: #dfe2e8;
+  --input: #d4d8e0;
+  --ring: #3b82f6;
+
+  --radius: 0.625rem;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Mono stack doubles for terminal/panel use (wave 2: xterm.js). */
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0f1115;
-    --fg: #e8eaed;
-    --muted: #9aa0a6;
+    --background: #0f1115;
+    --foreground: #e8eaed;
     --card: #1a1d23;
+    --card-foreground: #e8eaed;
+    --primary: #5b9cf8;
+    --primary-foreground: #0b1220;
+    --secondary: #262b34;
+    --secondary-foreground: #e8eaed;
+    --muted: #20252e;
+    --muted-foreground: #9aa0a6;
+    --accent: #1e2c4b;
+    --accent-foreground: #9cc2fb;
+    --border: #2c313b;
+    --input: #3a414d;
+    --ring: #5b9cf8;
   }
 }
 
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
 body {
-  margin: 0;
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  background: var(--bg);
-  color: var(--fg);
-}
-
-main {
-  width: min(480px, 90vw);
-  text-align: center;
-}
-
-h1 {
-  font-size: 2.25rem;
-  margin: 0 0 0.25rem;
-}
-
-.muted {
-  color: var(--muted);
-}
-
-form {
-  display: flex;
-  gap: 0.5rem;
-  margin: 1.5rem 0 1rem;
-}
-
-input,
-button {
-  font: inherit;
-  padding: 0.6rem 0.9rem;
-  border-radius: 8px;
-  border: 1px solid color-mix(in srgb, var(--muted) 40%, transparent);
-  background: var(--card);
-  color: inherit;
-}
-
-input {
-  flex: 1;
-}
-
-button {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: white;
-  cursor: pointer;
-}
-
-.card:empty {
-  display: none;
-}
-
-.card {
-  padding: 1rem;
-  border-radius: 12px;
-  background: var(--card);
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
 }
