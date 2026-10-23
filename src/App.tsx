@@ -1,66 +1,81 @@
-import { useEffect, useState } from "react";
-import { Greeter, events, type SystemInfo } from "./mygo";
+import { Suspense, lazy, useEffect, useState } from "react";
+import { useChannels } from "./lib/channels";
+import { Sidebar } from "./components/layout/Sidebar";
+import { TabStrip } from "./components/layout/TabStrip";
+import { StatusBar } from "./components/layout/StatusBar";
+import { events } from "./mygo";
+
+// Lazy placeholder slots for sibling panels. Wave-2 slices replace the
+// modules below with real implementations, keeping the
+// `<TerminalPanel channel />` / `<InspectorPanel channel />` props contract.
+const TerminalPanel = lazy(() => import("./components/panels/TerminalPanel"));
+const InspectorPanel = lazy(() => import("./components/panels/InspectorPanel"));
+
+const PANEL_FALLBACK = (
+  <div className="grid flex-1 place-items-center text-sm text-muted-foreground">Loading…</div>
+);
 
 export default function App() {
-  const [name, setName] = useState("");
-  const [greeting, setGreeting] = useState("");
-  const [info, setInfo] = useState<SystemInfo | null>(null);
+  const {
+    channels,
+    tabs,
+    activeId,
+    active,
+    portsLoading,
+    listError,
+    openChannel,
+    closeChannel,
+    selectChannel,
+    markRead,
+    resetCounters,
+  } = useChannels();
   const [clock, setClock] = useState("--:--:--");
 
+  useEffect(
+    () =>
+      events.tick.on((time) => {
+        setClock(new Date(time).toLocaleTimeString());
+      }),
+    [],
+  );
+
+  // Clear the unread badge whenever the active channel changes.
   useEffect(() => {
-    let cancelled = false;
-    Greeter.info().then((result) => {
-      if (!cancelled) setInfo(result);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => events.tick.on((time) => {
-    setClock(new Date(time).toLocaleTimeString());
-  }), []);
-
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setGreeting(await Greeter.greet(name));
-  }
+    if (activeId !== null) markRead(activeId);
+  }, [activeId, markRead]);
 
   return (
-    <main className="mx-auto grid min-h-screen w-full max-w-xl place-items-center bg-background px-6 text-foreground">
-      <div className="w-full text-center">
-        <h1 className="text-4xl font-semibold tracking-tight">linkdeck</h1>
-        <p className="mt-2 text-muted-foreground">
-          Go ↔ TypeScript, fully typed.
-        </p>
-
-        <form onSubmit={onSubmit} className="mt-8 flex gap-2">
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Your name"
-            autoComplete="off"
-            autoFocus
-            className="min-h-11 flex-1 rounded-[var(--radius)] border border-input bg-card px-3.5 py-2.5 text-foreground placeholder:text-muted-foreground focus:outline-2 focus:outline-ring"
+    <div className="flex h-screen w-full flex-col bg-background text-foreground">
+      <div className="flex min-h-0 flex-1">
+        <Sidebar
+          channels={channels}
+          activeId={activeId}
+          loading={portsLoading}
+          listError={listError}
+          onOpen={openChannel}
+          onSelect={selectChannel}
+        />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <TabStrip
+            tabs={tabs}
+            channels={channels}
+            activeId={activeId}
+            onSelect={selectChannel}
+            onClose={closeChannel}
           />
-          <button
-            type="submit"
-            className="min-h-11 rounded-[var(--radius)] bg-primary px-5 py-2.5 font-medium text-primary-foreground hover:opacity-90"
-          >
-            Greet
-          </button>
-        </form>
-
-        {greeting && (
-          <p className="mt-4 rounded-[var(--radius)] border border-border bg-card p-4">
-            {greeting}
-          </p>
-        )}
-
-        <p className="mt-6 font-mono text-sm text-muted-foreground">
-          {info ? `${info.os}/${info.arch} · ${info.goVersion}` : "…"} · {clock}
-        </p>
+          <div className="flex min-h-0 flex-1">
+            <main className="flex min-w-0 flex-1 flex-col">
+              <Suspense fallback={PANEL_FALLBACK}>
+                <TerminalPanel channel={active} />
+              </Suspense>
+            </main>
+            <Suspense fallback={PANEL_FALLBACK}>
+              <InspectorPanel channel={active} />
+            </Suspense>
+          </div>
+        </div>
       </div>
-    </main>
+      <StatusBar channel={active} clock={clock} onResetCounters={resetCounters} />
+    </div>
   );
 }
