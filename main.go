@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"linkdeck/internal/serial"
 )
 
 // Greeter is callable from the frontend: `mygo generate` turns its methods
@@ -36,7 +37,7 @@ func (Greeter) Info() SystemInfo {
 var Tick = mygo.NewEvent[time.Time]("tick")
 
 func main() {
-	mygo.Bind(Greeter{})
+	mygo.Bind(Greeter{}, serial.NewSerialService())
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{

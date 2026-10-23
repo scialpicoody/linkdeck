@@ -4,6 +4,50 @@ import { call, event } from "mygo-runtime";
 
 // ---- Types ----
 
+/** ModemStatus carries the modem input status bits of a serial port. */
+export interface ModemStatus {
+  cts: boolean;
+  dsr: boolean;
+  ri: boolean;
+  dcd: boolean;
+}
+
+/**
+ * OpenRequest asks the service to open a port. ReadTimeoutMs applies a read
+ * timeout in milliseconds: 0 leaves the library default in place, negative
+ * disables the timeout.
+ */
+export interface OpenRequest {
+  port: string;
+  baudRate: number;
+  dataBits: number;
+  parity: Parity;
+  stopBits: StopBits;
+  readTimeoutMs: number;
+}
+
+/** Parity is a JSON-friendly serial parity setting. */
+export type Parity = "none" | "odd" | "even" | "mark" | "space";
+
+/**
+ * PortInfo describes one serial port. USB detail fields are populated where
+ * the platform reports them (see list_detail.go); elsewhere only Name is
+ * set. Poll List on a ticker for arrival/removal detection: the underlying
+ * library offers no hotplug events (see package doc gap 2).
+ */
+export interface PortInfo {
+  name: string;
+  usb: boolean;
+  vid?: string;
+  pid?: string;
+  serialNumber?: string;
+  manufacturer?: string;
+  product?: string;
+}
+
+/** StopBits is a JSON-friendly stop-bits setting. */
+export type StopBits = "1" | "1.5" | "2";
+
 /** SystemInfo describes the machine the app runs on. */
 export interface SystemInfo {
   os: string;
@@ -25,6 +69,51 @@ export const Greeter = {
   /** Info returns information about the system. */
   info(): Promise<SystemInfo> {
     return call("Greeter.Info");
+  },
+} as const;
+
+/**
+ * SerialService exposes the serial transport to the frontend via mygo.Bind.
+ * It owns the open ports by name: Open is exclusive per name, and every
+ * method is safe for concurrent calls from any goroutine.
+ */
+export const SerialService = {
+  /**
+   * Close shuts the named port; closing an unknown port is an error, closing
+   * twice is not (Close is idempotent, like Port.Close).
+   */
+  close(name: string): Promise<void> {
+    return call("SerialService.Close", name);
+  },
+  /** List returns all serial ports; see List for USB-detail and polling notes. */
+  list(): Promise<PortInfo[]> {
+    return call("SerialService.List");
+  },
+  /**
+   * Open validates req and opens the port, reporting an error if it is already
+   * open through this service.
+   */
+  open(req: OpenRequest): Promise<PortInfo> {
+    return call("SerialService.Open", req);
+  },
+  /** Recv reads up to maxLen bytes from the named open port. */
+  recv(name: string, maxLen: number): Promise<string> {
+    return call("SerialService.Recv", name, maxLen);
+  },
+  /** Send writes data to the named open port. */
+  send(name: string, data: string): Promise<number> {
+    return call("SerialService.Send", name, data);
+  },
+  /**
+   * SetReadTimeout sets the read timeout of the named open port in
+   * milliseconds; negative disables it.
+   */
+  setReadTimeout(name: string, timeoutMs: number): Promise<void> {
+    return call("SerialService.SetReadTimeout", name, timeoutMs);
+  },
+  /** Status queries the modem-line status of the named open port. */
+  status(name: string): Promise<ModemStatus> {
+    return call("SerialService.Status", name);
   },
 } as const;
 
