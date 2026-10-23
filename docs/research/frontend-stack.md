@@ -233,6 +233,13 @@ There are effectively none for our use case:
   worker via Vite's `?worker&inline` (blob URL) — a build-flag change, not a
   design change.
 
+> **Build correction (integration, Vite 8/Rolldown):** neither `?worker` nor
+> `?worker&inline` resolves AT ALL in this pipeline — static or dynamic
+> (build-verified, three attempts). The editor ships with NO worker
+> (`MonacoEnvironment.getWorker` unset): Monaco runs on the main thread,
+> which is fine for KB-sized Lua scripts. Revisit only if files grow or a
+> future Vite version restores `?worker` support.
+
 ### Go interop
 
 Same story as xterm: Monaco is a view over strings. Load/save/filename-list via
