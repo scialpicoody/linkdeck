@@ -1,9 +1,16 @@
-import { Braces, Hexagon, ScanSearch, X } from "lucide-react";
+import { Braces, FileJson2, Hexagon, ScanSearch, Table2, X } from "lucide-react";
 import { useEffect } from "react";
+import { toast } from "sonner";
+import {
+  type FrameExportFormat,
+  frameExportFilename,
+  serializeFrameExport,
+} from "../../lib/frame-export";
 import { cn } from "../../lib/utils";
 import FrameDetail from "../inspector/FrameDetail";
 import ThroughputChart from "../inspector/ThroughputChart";
 import type { InspectorFrame } from "../inspector/types";
+import { Hint } from "../ui/Hint";
 import { formatBytes } from "./format";
 import type { Frame } from "./types";
 
@@ -11,6 +18,8 @@ export interface FrameInspectorProps {
   /** Selected frame + its channel; null renders the inspector empty state. */
   selection: { frame: Frame; channelName: string } | null;
   onClose: () => void;
+  /** Active Channel's current retained Frame window. */
+  frames?: readonly Frame[];
   stats?: {
     frames: number;
     bytes: number;
@@ -20,21 +29,28 @@ export interface FrameInspectorProps {
   };
 }
 
-function toInspectorFrame(frame: Frame, channelName: string): InspectorFrame {
-  return {
-    id: `${frame.ts}-${frame.dir}`,
+function toInspectorFrame(frame: Frame, channelName: string): InspectorFrame & { error?: string } {
+  const inspected: InspectorFrame & { error?: string } = {
+    id: frame.id,
     channelName,
     direction: frame.dir === "in" ? "rx" : "tx",
     timestampMs: frame.ts,
     payload: frame.payload,
   };
+  if (frame.error !== undefined) inspected.error = frame.error;
+  return inspected;
 }
 
 /**
  * Inspector content for the persistent operations dock. Selection is owned by
  * the frame table; closing clears it and leaves the dock ready for another row.
  */
-export default function FrameInspector({ selection, onClose, stats }: FrameInspectorProps) {
+export default function FrameInspector({
+  selection,
+  onClose,
+  frames = [],
+  stats,
+}: FrameInspectorProps) {
   useEffect(() => {
     if (selection === null) return;
     function onKey(event: KeyboardEvent) {
@@ -43,6 +59,33 @@ export default function FrameInspector({ selection, onClose, stats }: FrameInspe
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [selection, onClose]);
+
+  function exportFrames(format: FrameExportFormat): void {
+    if (frames.length === 0) {
+      toast.info("Nothing to export", {
+        description: "The active Channel has no retained Frames.",
+      });
+      return;
+    }
+
+    try {
+      const content = serializeFrameExport(frames, format);
+      const type = format === "jsonl" ? "application/x-ndjson" : "text/csv";
+      const url = URL.createObjectURL(new Blob([content], { type: `${type};charset=utf-8` }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = frameExportFilename(format);
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      toast.success(`Exported ${frames.length} Frames as ${format.toUpperCase()}`);
+    } catch (error) {
+      toast.error(`Export ${format.toUpperCase()} failed`, {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-card">
@@ -53,15 +96,39 @@ export default function FrameInspector({ selection, onClose, stats }: FrameInspe
             {selection === null ? "session" : selection.frame.dir === "in" ? "RX" : "TX"}
           </span>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          title="Close inspector (Esc)"
-          aria-label="Close inspector"
-          className="grid size-7 place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground"
-        >
-          <X size={14} aria-hidden="true" />
-        </button>
+        <div className="flex items-center">
+          <Hint label="Export retained Frames as JSONL">
+            <button
+              type="button"
+              onClick={() => exportFrames("jsonl")}
+              title="Export retained Frames as JSONL"
+              aria-label="Export retained Frames as JSONL"
+              className="grid size-7 place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground"
+            >
+              <FileJson2 size={13} aria-hidden="true" />
+            </button>
+          </Hint>
+          <Hint label="Export retained Frames as CSV">
+            <button
+              type="button"
+              onClick={() => exportFrames("csv")}
+              title="Export retained Frames as CSV"
+              aria-label="Export retained Frames as CSV"
+              className="grid size-7 place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground"
+            >
+              <Table2 size={13} aria-hidden="true" />
+            </button>
+          </Hint>
+          <button
+            type="button"
+            onClick={onClose}
+            title="Close inspector (Esc)"
+            aria-label="Close inspector"
+            className="grid size-7 place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground"
+          >
+            <X size={14} aria-hidden="true" />
+          </button>
+        </div>
       </div>
       {stats !== undefined && (
         <>

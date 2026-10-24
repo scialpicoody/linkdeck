@@ -1,73 +1,9 @@
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
+import { type FrameCopyFormat, frameCopyText } from "../../lib/frame-export";
 import type { InspectorFrame } from "./types";
 
 type DetailView = "hex" | "ascii" | "json";
-
-const HEX_CHARS = "0123456789abcdef";
-
-function byteToHex(b: number): string {
-  return HEX_CHARS.charAt((b >> 4) & 0xf) + HEX_CHARS.charAt(b & 0xf);
-}
-
-function isPrintable(b: number): boolean {
-  return b >= 0x20 && b <= 0x7e;
-}
-
-function toAscii(payload: Uint8Array): string {
-  let out = "";
-  for (const b of payload) out += isPrintable(b) ? String.fromCharCode(b) : "·";
-  return out;
-}
-
-function hexdump(payload: Uint8Array): string {
-  const rows: string[] = [];
-  for (let off = 0; off < payload.length; off += 16) {
-    const slice = payload.slice(off, off + 16);
-    const hex: string[] = [];
-    let asc = "";
-    for (let i = 0; i < 16; i++) {
-      const b: number | undefined = slice[i];
-      if (b === undefined) {
-        hex.push("  ");
-      } else {
-        hex.push(byteToHex(b));
-        asc += isPrintable(b) ? String.fromCharCode(b) : ".";
-      }
-      if (i === 7) hex.push("");
-    }
-    const offset = off.toString(16).padStart(8, "0");
-    rows.push(`${offset}  ${hex.join(" ")}  |${asc}|`);
-  }
-  return rows.join("\n");
-}
-
-function utf8Text(payload: Uint8Array): string {
-  try {
-    return new TextDecoder("utf-8", { fatal: false }).decode(payload);
-  } catch {
-    return "";
-  }
-}
-
-function jsonPreview(frame: InspectorFrame, text: string): string {
-  const meta = {
-    id: frame.id,
-    channel: frame.channelName,
-    direction: frame.direction,
-    timestamp: new Date(frame.timestampMs).toISOString(),
-    length: frame.payload.length,
-  };
-  const trimmed = text.trim();
-  if (trimmed.length > 0) {
-    try {
-      const parsed: unknown = JSON.parse(trimmed);
-      return JSON.stringify({ meta, payload: parsed }, null, 2);
-    } catch {
-      // Not JSON — fall through to metadata + raw text.
-    }
-  }
-  return JSON.stringify({ meta, text }, null, 2);
-}
 
 const VIEW_TABS: { id: DetailView; label: string }[] = [
   { id: "hex", label: "Hex" },
@@ -75,9 +11,17 @@ const VIEW_TABS: { id: DetailView; label: string }[] = [
   { id: "json", label: "JSON" },
 ];
 
+const COPY_FORMATS: { id: FrameCopyFormat; label: string }[] = [
+  { id: "hex", label: "HEX" },
+  { id: "ascii", label: "ASCII" },
+  { id: "json", label: "JSON" },
+];
+
+type DetailFrame = InspectorFrame & { error?: string };
+
 export interface FrameDetailProps {
   /** Selected frame; null renders the empty state. */
-  frame: InspectorFrame | null;
+  frame: DetailFrame | null;
 }
 
 export default function FrameDetail({ frame }: FrameDetailProps) {
@@ -85,15 +29,25 @@ export default function FrameDetail({ frame }: FrameDetailProps) {
 
   const body = useMemo(() => {
     if (!frame) return "";
-    switch (view) {
-      case "hex":
-        return hexdump(frame.payload);
-      case "ascii":
-        return toAscii(frame.payload);
-      case "json":
-        return jsonPreview(frame, utf8Text(frame.payload));
-    }
+    return frameCopyText(frame, view);
   }, [frame, view]);
+
+  async function copyFrame(format: FrameCopyFormat): Promise<void> {
+    if (frame === null) return;
+    if (frame.payload.length === 0) {
+      toast.info("Nothing to copy", { description: "This Frame has an empty payload." });
+      return;
+    }
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard is unavailable.");
+      await navigator.clipboard.writeText(frameCopyText(frame, format));
+      toast.success(`Copied Frame as ${format.toUpperCase()}`);
+    } catch (error) {
+      toast.error(`Copy ${format.toUpperCase()} failed`, {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
   if (!frame) {
     return (
@@ -120,6 +74,12 @@ export default function FrameDetail({ frame }: FrameDetailProps) {
         </dd>
         <dt className="text-muted-foreground">Length</dt>
         <dd className="font-mono text-right text-card-foreground">{frame.payload.length} B</dd>
+        {frame.error !== undefined && (
+          <>
+            <dt className="text-danger">TX error</dt>
+            <dd className="text-right font-mono text-danger">{frame.error}</dd>
+          </>
+        )}
       </dl>
 
       <div
@@ -143,6 +103,23 @@ export default function FrameDetail({ frame }: FrameDetailProps) {
             {t.label}
           </button>
         ))}
+      </div>
+
+      <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-1.5">
+        <span className="eyebrow text-muted-foreground">Copy as</span>
+        <div className="flex border border-border bg-card">
+          {COPY_FORMATS.map((format) => (
+            <button
+              key={format.id}
+              type="button"
+              onClick={() => void copyFrame(format.id)}
+              title={`Copy Frame as ${format.label}`}
+              className="border-r border-border px-2 py-1 font-mono text-[9px] text-muted-foreground last:border-r-0 hover:bg-secondary hover:text-foreground"
+            >
+              {format.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <pre className="min-h-0 flex-1 overflow-auto bg-muted/40 p-3 font-mono text-[11px] leading-relaxed text-card-foreground">

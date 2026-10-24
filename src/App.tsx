@@ -1217,6 +1217,7 @@ export default function App() {
                           ? { frame: frameSelection, channelName: active.name }
                           : null
                       }
+                      frames={activeCapture?.frames.frames ?? []}
                       onClose={() => setFrameSelection(null)}
                       stats={
                         active === null
