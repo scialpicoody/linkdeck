@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"log"
-	"runtime"
 	"sort"
 	"sync"
 	"time"
@@ -16,30 +15,6 @@ import (
 	"linkdeck/internal/stream"
 	"linkdeck/internal/tcp"
 )
-
-// Greeter is callable from the frontend: `mygo generate` turns its methods
-// into typed TypeScript functions in src/mygo.ts.
-type Greeter struct{}
-
-// Greet returns a greeting for name.
-func (Greeter) Greet(name string) string {
-	if name == "" {
-		name = "stranger"
-	}
-	return "Hello, " + name + "! This message comes from Go."
-}
-
-// SystemInfo describes the machine the app runs on.
-type SystemInfo struct {
-	OS        string `json:"os"`
-	Arch      string `json:"arch"`
-	GoVersion string `json:"goVersion"`
-}
-
-// Info returns information about the system.
-func (Greeter) Info() SystemInfo {
-	return SystemInfo{OS: runtime.GOOS, Arch: runtime.GOARCH, GoVersion: runtime.Version()}
-}
 
 // Tick is sent to the page every second.
 var Tick = mygo.NewEvent[time.Time]("tick")
@@ -383,7 +358,7 @@ func main() {
 	scriptAPI := ScriptAPI{svc: scriptSvc}
 	streamAPI := &StreamAPI{}
 
-	mygo.Bind(Greeter{}, serialSvc, tcpSvc, scriptAPI, workspaceAPI, &ConfigAPI{}, streamAPI)
+	mygo.Bind(serialSvc, tcpSvc, scriptAPI, workspaceAPI, &ConfigAPI{}, streamAPI)
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{

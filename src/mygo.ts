@@ -194,13 +194,6 @@ export interface Spec {
 /** StopBits is a JSON-friendly stop-bits setting. */
 export type StopBits = "1" | "1.5" | "2";
 
-/** SystemInfo describes the machine the app runs on. */
-export interface SystemInfo {
-  os: string;
-  arch: string;
-  goVersion: string;
-}
-
 /**
  * OpenRequest asks the service to dial a TCP client. It is JSON-friendly for
  * mygo bindings.
@@ -255,21 +248,6 @@ export interface WorkspaceFile {
 }
 
 // ---- Services ----
-
-/**
- * Greeter is callable from the frontend: `mygo generate` turns its methods
- * into typed TypeScript functions in src/mygo.ts.
- */
-export const Greeter = {
-  /** Greet returns a greeting for name. */
-  greet(name: string): Promise<string> {
-    return call("Greeter.Greet", name);
-  },
-  /** Info returns information about the system. */
-  info(): Promise<SystemInfo> {
-    return call("Greeter.Info");
-  },
-} as const;
 
 /**
  * SerialService exposes the serial transport to the frontend via mygo.Bind.

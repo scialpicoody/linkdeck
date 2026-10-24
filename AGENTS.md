@@ -1,7 +1,5 @@
 # AGENTS.md
 
-> `CLAUDE.md` is a symlink to this file — edit here only.
-
 This file provides guidance to coding agents when working with code in this repository.
 
 ## Agent skills
