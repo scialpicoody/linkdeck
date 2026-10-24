@@ -78,8 +78,25 @@ type Client struct {
 	loopMu  sync.Mutex // ensures a single reconnect goroutine
 	looping bool
 
-	hbStop   chan struct{}
-	hbStopMu sync.Mutex
+	hookMu      sync.Mutex
+	onReconnect func() // stream slice: framer Reset on fresh connection
+	hbStop      chan struct{}
+	hbStopMu    sync.Mutex
+}
+
+// SetReconnectHook registers fn, called (without client locks held) on
+// every successful reconnect. The stream slice uses it to Reset framer
+// residue while keeping pending matchers. A nil fn clears the hook.
+func (c *Client) SetReconnectHook(fn func()) {
+	c.hookMu.Lock()
+	defer c.hookMu.Unlock()
+	c.onReconnect = fn
+}
+
+func (c *Client) reconnectHook() func() {
+	c.hookMu.Lock()
+	defer c.hookMu.Unlock()
+	return c.onReconnect
 }
 
 // Dial opens a reconnecting client. It blocks for at most the connect
@@ -316,6 +333,9 @@ func (c *Client) startReconnectLoop(firstAttempt int) {
 				c.mu.Unlock()
 				c.setState(StateConnected)
 				c.startHeartbeat()
+				if hook := c.reconnectHook(); hook != nil {
+					hook()
+				}
 				return
 			}
 		}

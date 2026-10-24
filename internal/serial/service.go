@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"linkdeck/internal/framing"
+	"linkdeck/internal/stream"
 )
 
 // OpenRequest asks the service to open a port. ReadTimeoutMs applies a read
@@ -23,8 +26,18 @@ type OpenRequest struct {
 // It owns the open ports by name: Open is exclusive per name, and every
 // method is safe for concurrent calls from any goroutine.
 type SerialService struct {
-	mu    sync.Mutex
-	ports map[string]*Port
+	mu     sync.Mutex
+	ports  map[string]*Port
+	stream *stream.Manager
+}
+
+// AttachStream connects the RX stream manager (ticket #11). When attached,
+// Open starts a per-port read loop and Close stops it. A nil manager
+// detaches. NOT bound in main.go; the integrator owns binding.
+func (s *SerialService) AttachStream(m *stream.Manager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stream = m
 }
 
 // NewSerialService returns an empty SerialService.
@@ -61,6 +74,16 @@ func (s *SerialService) Open(req OpenRequest) (PortInfo, error) {
 	if err != nil {
 		return PortInfo{}, err
 	}
+	mgr := s.stream
+	if mgr != nil {
+		framer, ferr := framing.NewDelimiter(framing.DelimiterConfig{Delimiter: []byte("\n")})
+		if ferr == nil {
+			if serr := mgr.Start(req.Port, portSource{port: p}, framer); serr != nil {
+				_ = p.Close()
+				return PortInfo{}, serr
+			}
+		}
+	}
 	s.ports[req.Port] = p
 	return PortInfo{Name: req.Port}, nil
 }
@@ -77,8 +100,28 @@ func (s *SerialService) Close(name string) error {
 	if !ok {
 		return fmt.Errorf("serial: %s is not open", name)
 	}
-	return p.Close()
+	// Close the port first: it unblocks the read loop's in-flight Recv
+	// (Manager.Stop waits for the loop to exit and cannot interrupt a
+	// blocking Read itself).
+	err := p.Close()
+	if mgr := s.streamOf(); mgr != nil {
+		mgr.Stop(name)
+	}
+	return err
 }
+
+// streamOf reports the attached stream manager, if any.
+func (s *SerialService) streamOf() *stream.Manager {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stream
+}
+
+// portSource adapts an open Port to stream.Source.
+type portSource struct{ port *Port }
+
+// Read implements stream.Source.
+func (ps portSource) Read(maxLen int) ([]byte, error) { return ps.port.Recv(maxLen) }
 
 // Send writes data to the named open port.
 func (s *SerialService) Send(name string, data []byte) (int, error) {
