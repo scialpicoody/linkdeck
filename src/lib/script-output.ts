@@ -1,8 +1,35 @@
 import type { ScriptOutputRow, ScriptOutputType } from "../components/scripts";
 import type { OutputRow } from "../mygo";
 
-const OUTPUT_TYPES = new Set<ScriptOutputType>(["log", "tx", "rx", "unmatched", "error", "system"]);
+export const SCRIPT_OUTPUT_TYPES: readonly ScriptOutputType[] = [
+  "log",
+  "tx",
+  "rx",
+  "unmatched",
+  "error",
+  "system",
+];
+
+const OUTPUT_TYPES = new Set<ScriptOutputType>(SCRIPT_OUTPUT_TYPES);
 const DIRECTIONS = new Set<ScriptOutputRow["direction"]>(["in", "out", "local"]);
+
+export type ScriptOutputTypeFilter = "all" | ScriptOutputType;
+
+export interface ScriptOutputFilters {
+  type: ScriptOutputTypeFilter;
+  /** A specific run id, or null for all runs. An empty string selects system rows. */
+  runId: string | null;
+}
+
+let outputRowSequence = 0;
+
+function nextOutputRowId(): string {
+  outputRowSequence += 1;
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid === undefined
+    ? `script-output-${Date.now().toString(36)}-${outputRowSequence.toString(36)}`
+    : `script-output-${uuid}`;
+}
 
 /** Validate and normalize one host row; unknown shapes are dropped. */
 export function scriptOutputFromHost(row: OutputRow): ScriptOutputRow | null {
@@ -13,6 +40,7 @@ export function scriptOutputFromHost(row: OutputRow): ScriptOutputRow | null {
     return null;
   }
   return {
+    id: nextOutputRowId(),
     runId: typeof row.runId === "string" ? row.runId : "",
     script: typeof row.script === "string" ? row.script : "",
     type: row.type as ScriptOutputType,
@@ -38,4 +66,39 @@ export function appendScriptOutput(
 export function outputForScript(rows: ScriptOutputRow[], script: string): ScriptOutputRow[] {
   if (script === "") return [];
   return rows.filter((row) => row.script === script);
+}
+
+/** Apply pane filters to rows already scoped to the active script. */
+export function filterScriptOutput(
+  rows: ScriptOutputRow[],
+  { type, runId }: ScriptOutputFilters,
+): ScriptOutputRow[] {
+  return rows.filter(
+    (row) => (type === "all" || row.type === type) && (runId === null || row.runId === runId),
+  );
+}
+
+/** Unique run ids in first-seen order, including the empty system/session id. */
+export function scriptOutputRunIds(rows: ScriptOutputRow[]): string[] {
+  return [...new Set(rows.map((row) => row.runId))];
+}
+
+/**
+ * Format filtered rows as readable TSV for clipboard use. Data stays the final
+ * column so multi-line script output remains intact and easy to inspect.
+ */
+export function formatScriptOutputForCopy(rows: ScriptOutputRow[]): string {
+  const header = ["Time", "Type", "Run", "Script", "Channel", "Direction", "Data"].join("\t");
+  const body = rows.map((row) =>
+    [
+      new Date(row.ts).toISOString(),
+      row.type,
+      row.runId || "-",
+      row.script || "-",
+      row.channel || "-",
+      row.direction,
+      row.data,
+    ].join("\t"),
+  );
+  return [header, ...body].join("\n");
 }

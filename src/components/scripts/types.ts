@@ -26,6 +26,8 @@ type ScriptDirection = "in" | "out" | "local";
  * (`serial:…`, `tcp:…`) or is empty for local log output.
  */
 export interface ScriptOutputRow {
+  /** Stable local row identity, generated once when the host row is normalized. */
+  id: string;
   /** Stable run id; empty for session lifecycle/system output. */
   runId: string;
   /** Workspace-relative script path this row belongs to. */
