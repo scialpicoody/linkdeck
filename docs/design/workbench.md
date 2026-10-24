@@ -27,11 +27,12 @@ and a dedicated script workspace.
 The frame stream is the main workspace. Chrome, navigation, and controls must
 not consume width that belongs to payloads.
 
-### One active channel
+### Current monitor
 
-One channel is active at a time. The left rail is for switching, opening, and
-configuring channels. There is no top tab strip and no hidden multi-panel
-comparison view in v1.
+The current implementation has one active channel. The left rail is for
+switching, opening, and configuring channels. Multi-channel monitoring and
+comparison layouts remain eligible product work and should preserve Channel
+and Frame identity when introduced.
 
 ### Persistent operations
 

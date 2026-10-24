@@ -1,4 +1,4 @@
-# Frontend stack research — LinkDeck v1 in the mygo webview
+# Frontend stack research — LinkDeck in the mygo webview
 
 **Ticket:** #7 · **Date:** 2026-10-24 · **Branch:** `research/frontend-stack`
 
@@ -262,4 +262,4 @@ script-store service itself (a later ticket's design).
   distro versions when the UI phase starts.
 - **A11y hooks exist if needed:** xterm screen-reader mode
   (`screenReaderMode` option); mygo forwards `reduceMotion`/`highContrast`/
-  `textScale` prefs. Not v1 scope, but no dead ends.
+  `textScale` prefs.

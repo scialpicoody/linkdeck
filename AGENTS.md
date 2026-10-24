@@ -114,5 +114,5 @@ direction is recorded in `docs/adr/0001-signal-bench-visual-language.md`.
 
 - Issues and specs live in GitHub Issues via `gh` (conventions in `docs/agents/issue-tracker.md`; triage label mapping in `docs/agents/triage-labels.md`). Before design work, read `CONTEXT.md` and any relevant ADRs in `docs/adr/`; surface conflicts with an ADR explicitly instead of silently overriding it.
 - `docs/research/` records the primary-source evidence behind stack decisions (serial library, Lua runtime, frontend stack). Keep decision evidence there rather than in chat.
-- v1 scope guards (locked in the wayfinding maps): no CLI/REPL surface, no session recording/replay, no command palette, no remote/LAN channels, no bilingual UI, no built-in protocol implementations, no TLS, no plugin registry. `serial_cli` is a feature-level reference only — never consult its source.
+- All product capabilities are eligible for development. Closed release maps, completion notes, and research documents record implementation status; they never limit future functionality. `serial_cli` is a feature-level reference only — never consult its source.
 - Product copy and code comments are English; conversation with the maintainer is Chinese.

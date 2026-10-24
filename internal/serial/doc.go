@@ -9,9 +9,9 @@
 //
 //  1. No flow-control API (upstream issue #201: no RTS/CTS or XON/XOFF
 //     setting). Mode deliberately exposes no flow-control fields; hardware
-//     flow control is out of scope until a device demands it. The manual
-//     workaround (SetRTS + GetModemStatusBits polling in app code) remains
-//     possible without changing this package's API.
+//     flow control is not currently exposed. The manual workaround (SetRTS +
+//     GetModemStatusBits polling in app code) remains possible without
+//     changing this package's API.
 //  2. No hotplug/listen events. Arrival/removal detection must poll List on
 //     an app-level ticker (e.g. 1-2 s); List is the poll primitive.
 //  3. Close does not unblock a blocked Write (upstream issue #150; blocked

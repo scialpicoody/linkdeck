@@ -109,5 +109,5 @@ Sources: [`serial.go`](https://github.com/bugst/go-serial/blob/master/serial.go)
 
 Adopt **`go.bug.st/serial` v1.8.0** for Phase 1. Pin the version in `go.mod`
 when the serial phase starts; budget app-level polling for port-list refresh;
-treat hardware flow control as out of scope until a device demands it (gap 1
-workarounds above).
+keep hardware flow control unexposed until a device requires it (gap 1
+workarounds above remain available).
