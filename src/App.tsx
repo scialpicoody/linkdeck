@@ -161,8 +161,6 @@ export default function App() {
     ]);
   }, []);
 
-  const selectedScript = DEMO_SCRIPTS.find((s) => s.id === selectedScriptId) ?? null;
-
   function openScriptTab(script: ScriptEntry): void {
     setOpenScriptIds((prev) => (prev.includes(script.id) ? prev : [...prev, script.id]));
     setSelectedScriptId(script.id);
@@ -185,6 +183,7 @@ export default function App() {
     if (active === null) return;
     const id = active.id;
     setFramesByChannel((prev) => ({ ...prev, [id]: [] }));
+    setFrameSelection(null);
   }, [active]);
 
   // Unified submit for the channel dialog (#18). Create: open + tab.
@@ -400,9 +399,6 @@ export default function App() {
                     <ScriptOutput rows={outputRows} onErrorLine={setErrorLine} />
                   </div>
                 </main>
-              )}
-              {selectedScript !== null && (
-                <span className="sr-only">Editing {selectedScript.name}</span>
               )}
             </div>
           </div>
