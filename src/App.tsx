@@ -1,4 +1,4 @@
-import { Code2, ScanSearch, SendHorizontal, X } from "lucide-react";
+import { AlertTriangle, Code2, FilePlus2, Save, ScanSearch, SendHorizontal, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Toaster, toast } from "sonner";
 import type { ChannelFormValue } from "./components/channels";
@@ -22,7 +22,12 @@ import { Sidebar } from "./components/layout/Sidebar";
 import { StatusBar } from "./components/layout/StatusBar";
 import { type MainView, WorkbenchHeader } from "./components/layout/WorkbenchHeader";
 import type { ScriptEntry, ScriptOutputRow } from "./components/scripts";
-import { ScriptEditor, ScriptLibrary, ScriptOutput } from "./components/scripts";
+import {
+  CreateScriptDialog,
+  ScriptEditor,
+  ScriptLibrary,
+  ScriptOutput,
+} from "./components/scripts";
 import { HintsProvider } from "./components/ui/Hint";
 import {
   type Channel,
@@ -32,6 +37,14 @@ import {
 } from "./lib/channels";
 import { appendFrames, EMPTY_FRAME_BUFFER, type FrameBuffer } from "./lib/frame-store";
 import { isHostAvailable } from "./lib/host";
+import {
+  entryFromWorkspaceFile,
+  isScriptDirty,
+  liveFavorites,
+  nextTabAfterClose,
+  type ScriptTab,
+  tabFromDocument,
+} from "./lib/script-workspace";
 import { cn } from "./lib/utils";
 import {
   ConfigAPI,
@@ -42,15 +55,9 @@ import {
   type Preset,
   SerialService,
   StreamAPI,
+  WorkspaceAPI,
+  type WorkspaceFile,
 } from "./mygo";
-
-const DEMO_SCRIPTS: ScriptEntry[] = [
-  { id: "at-probe", name: "at-probe.lua", path: "scripts/at-probe.lua", origin: "workspace" },
-  { id: "echo-check", name: "echo-check.lua", path: "scripts/echo-check.lua", origin: "workspace" },
-];
-
-const LUA_STARTER =
-  '-- LinkDeck script: serial/tcp handles arrive in a later phase.\nlog("hello from " .. "script")\n';
 
 function configFromForm(value: ChannelFormValue): SerialChannelConfig {
   return {
@@ -147,10 +154,18 @@ export default function App() {
   );
   const [mainView, setMainView] = useState<MainView>("monitor");
   const [dockTab, setDockTab] = useState<"send" | "inspect">("send");
-  // Scripts view: open editor tabs (multi-tab) + per-tab sources.
+  // Scripts view: real workspace files, persisted favorites, and per-file
+  // editor tabs. Revisions detect external edits before a save overwrites.
+  const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
+  const [favorites, setFavorites] = useState<string[]>([]);
   const [openScriptIds, setOpenScriptIds] = useState<string[]>([]);
   const [selectedScriptId, setSelectedScriptId] = useState<string | null>(null);
-  const [scriptSources, setScriptSources] = useState<Record<string, string>>({});
+  const [scriptTabs, setScriptTabs] = useState<Record<string, ScriptTab>>({});
+  const [scriptSaving, setScriptSaving] = useState(false);
+  const [scriptConflict, setScriptConflict] = useState<string | null>(null);
+  const [createScriptOpen, setCreateScriptOpen] = useState(false);
   const [outputRows, setOutputRows] = useState<ScriptOutputRow[]>([]);
   const [errorLine, setErrorLine] = useState<number | null>(null);
   // Channel dialog: null = closed; {mode:"create"} or {mode:"edit", id}.
@@ -182,6 +197,51 @@ export default function App() {
         setPresets(mapped);
       })
       .catch(() => {});
+  }, []);
+
+  const refreshWorkspace = useCallback(async (): Promise<WorkspaceFile[]> => {
+    if (!isHostAvailable()) return [];
+    setWorkspaceLoading(true);
+    try {
+      const files = await WorkspaceAPI.list();
+      setWorkspaceFiles(files);
+      setWorkspaceError(null);
+      setFavorites((previous) => {
+        const cleaned = liveFavorites(previous, files);
+        if (cleaned.length !== previous.length) {
+          void ConfigAPI.setFavorites(cleaned).catch(() => {});
+        }
+        return cleaned;
+      });
+      return files;
+    } catch (error) {
+      setWorkspaceError(messageOf(error));
+      throw error;
+    } finally {
+      setWorkspaceLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isHostAvailable()) return;
+    let cancelled = false;
+    void Promise.all([WorkspaceAPI.list(), ConfigAPI.favorites()])
+      .then(([files, savedFavorites]) => {
+        if (cancelled) return;
+        setWorkspaceFiles(files);
+        setWorkspaceError(null);
+        const cleaned = liveFavorites(savedFavorites, files);
+        setFavorites(cleaned);
+        if (cleaned.length !== savedFavorites.length) {
+          void ConfigAPI.setFavorites(cleaned).catch(() => {});
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setWorkspaceError(messageOf(error));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Clear the unread badge and frame selection on channel switch.
@@ -324,23 +384,114 @@ export default function App() {
     ]);
   }, []);
 
-  function openScriptTab(script: ScriptEntry): void {
-    setOpenScriptIds((prev) => (prev.includes(script.id) ? prev : [...prev, script.id]));
-    setSelectedScriptId(script.id);
+  const showScriptDocument = useCallback((tab: ScriptTab) => {
+    setScriptTabs((previous) => ({ ...previous, [tab.id]: tab }));
+    setOpenScriptIds((previous) => (previous.includes(tab.id) ? previous : [...previous, tab.id]));
+    setSelectedScriptId(tab.id);
+    setScriptConflict(null);
     setErrorLine(null);
-    setScriptSources((prev) =>
-      prev[script.id] !== undefined ? prev : { ...prev, [script.id]: LUA_STARTER },
-    );
+  }, []);
+
+  async function openScriptTab(script: ScriptEntry): Promise<void> {
+    if (scriptTabs[script.id] !== undefined) {
+      setSelectedScriptId(script.id);
+      setScriptConflict(null);
+      setErrorLine(null);
+      return;
+    }
+    try {
+      const doc = await WorkspaceAPI.read(script.path);
+      showScriptDocument(tabFromDocument(doc));
+    } catch (error) {
+      toast.error(`Open ${script.name} failed`, { description: messageOf(error) });
+    }
   }
 
   function closeScriptTab(id: string): void {
-    setOpenScriptIds((prev) => prev.filter((t) => t !== id));
-    setSelectedScriptId((sel) => {
-      if (sel !== id) return sel;
-      const rest = openScriptIds.filter((t) => t !== id);
-      return rest.length > 0 ? (rest[rest.length - 1] as string) : null;
+    const tab = scriptTabs[id];
+    if (tab !== undefined && isScriptDirty(tab)) {
+      const discard = window.confirm(`Discard unsaved changes in ${tab.name}?`);
+      if (!discard) return;
+    }
+    const next = nextTabAfterClose(openScriptIds, id);
+    setOpenScriptIds((previous) => previous.filter((openId) => openId !== id));
+    setScriptTabs((previous) => {
+      const copy = { ...previous };
+      delete copy[id];
+      return copy;
+    });
+    if (selectedScriptId === id) {
+      setSelectedScriptId(next);
+      setScriptConflict(null);
+      setErrorLine(null);
+    }
+  }
+
+  async function createScript(name: string): Promise<void> {
+    const doc = await WorkspaceAPI.create(name);
+    await refreshWorkspace();
+    showScriptDocument(tabFromDocument(doc));
+  }
+
+  async function saveActiveScript(): Promise<void> {
+    if (selectedScriptId === null) return;
+    const tab = scriptTabs[selectedScriptId];
+    if (tab === undefined) return;
+    setScriptSaving(true);
+    setScriptConflict(null);
+    try {
+      const saved = await WorkspaceAPI.write(tab.path, tab.source, tab.revision);
+      const next = tabFromDocument(saved);
+      setScriptTabs((previous) => ({ ...previous, [next.id]: next }));
+      await refreshWorkspace();
+      toast.success(`${next.name} saved`);
+    } catch (error) {
+      const message = messageOf(error);
+      if (/changed on disk|conflict/i.test(message)) {
+        setScriptConflict(
+          `${tab.name} changed on disk. Reload it or copy your edits before saving again.`,
+        );
+      } else {
+        toast.error(`Save ${tab.name} failed`, { description: message });
+      }
+    } finally {
+      setScriptSaving(false);
+    }
+  }
+
+  async function reloadActiveScript(): Promise<void> {
+    if (selectedScriptId === null) return;
+    const tab = scriptTabs[selectedScriptId];
+    if (tab === undefined) return;
+    if (isScriptDirty(tab) && !window.confirm(`Discard unsaved changes in ${tab.name}?`)) return;
+    try {
+      const doc = await WorkspaceAPI.read(tab.path);
+      showScriptDocument(tabFromDocument(doc));
+      await refreshWorkspace();
+    } catch (error) {
+      toast.error(`Reload ${tab.name} failed`, { description: messageOf(error) });
+    }
+  }
+
+  function updateFavorites(next: string[]): void {
+    const previous = favorites;
+    setFavorites(next);
+    void ConfigAPI.setFavorites(next).catch((error: unknown) => {
+      setFavorites(previous);
+      toast.error("Favorite save failed", { description: messageOf(error) });
     });
   }
+
+  const activeScript = selectedScriptId === null ? null : (scriptTabs[selectedScriptId] ?? null);
+
+  useEffect(() => {
+    function beforeUnload(event: BeforeUnloadEvent) {
+      if (!Object.values(scriptTabs).some(isScriptDirty)) return;
+      event.preventDefault();
+    }
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => window.removeEventListener("beforeunload", beforeUnload);
+  }, [scriptTabs]);
 
   const handleClear = useCallback(() => {
     if (active === null) return;
@@ -633,10 +784,14 @@ export default function App() {
               <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row">
                 <div className="max-h-36 shrink-0 overflow-y-auto border-b border-border bg-card lg:max-h-none lg:w-56 lg:border-r lg:border-b-0">
                   <ScriptLibrary
-                    workspaceScripts={DEMO_SCRIPTS}
+                    workspaceScripts={workspaceFiles.map(entryFromWorkspaceFile)}
+                    favorites={favorites}
+                    onFavoritesChange={updateFavorites}
                     selectedId={selectedScriptId}
-                    onSelect={openScriptTab}
+                    onSelect={(script) => void openScriptTab(script)}
                     onRun={handleRun}
+                    onCreate={() => setCreateScriptOpen(true)}
+                    error={workspaceError}
                   />
                 </div>
 
@@ -649,9 +804,20 @@ export default function App() {
                         </span>
                         <p className="mt-4 text-sm font-medium">Open a Lua script</p>
                         <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-                          Choose a workspace script from the library. Output stays linked beneath
-                          the editor.
+                          {workspaceLoading
+                            ? "Scanning the Lua workspace…"
+                            : "Choose a workspace script from the library, or create one. Output stays linked beneath the editor."}
                         </p>
+                        {!workspaceLoading && workspaceFiles.length === 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setCreateScriptOpen(true)}
+                            className="mt-4 inline-flex h-8 items-center gap-1.5 bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90"
+                          >
+                            <FilePlus2 size={13} aria-hidden="true" />
+                            Create script
+                          </button>
+                        )}
                       </div>
                     </div>
                   ) : (
@@ -662,7 +828,7 @@ export default function App() {
                         className="flex h-9 shrink-0 items-center overflow-x-auto border-b border-border bg-panel-raised px-1.5"
                       >
                         {openScriptIds.map((id) => {
-                          const entry = DEMO_SCRIPTS.find((script) => script.id === id);
+                          const tab = scriptTabs[id];
                           const isSelected = id === selectedScriptId;
                           return (
                             <div
@@ -690,12 +856,17 @@ export default function App() {
                                 }}
                                 className="max-w-40 truncate font-mono text-[10px]"
                               >
-                                {entry?.name ?? id}
+                                {tab?.name ?? id}
+                                {tab !== undefined && isScriptDirty(tab) && (
+                                  <span className="ml-1 text-primary">
+                                    <span className="sr-only">Unsaved changes</span>●
+                                  </span>
+                                )}
                               </button>
                               <button
                                 type="button"
                                 onClick={() => closeScriptTab(id)}
-                                aria-label={`Close ${entry?.name ?? id}`}
+                                aria-label={`Close ${tab?.name ?? id}`}
                                 className="grid size-5 place-items-center text-muted-foreground hover:bg-muted hover:text-foreground"
                               >
                                 <X size={11} aria-hidden="true" />
@@ -705,19 +876,60 @@ export default function App() {
                         })}
                       </div>
 
+                      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border bg-card px-2">
+                        <span className="min-w-0 flex-1 truncate font-mono text-[9px] text-muted-foreground">
+                          {activeScript?.path ?? ""}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void reloadActiveScript()}
+                          className="h-6 border border-border bg-card px-2 font-mono text-[8px] uppercase text-muted-foreground hover:bg-muted hover:text-foreground"
+                        >
+                          Reload
+                        </button>
+                        <button
+                          type="button"
+                          disabled={
+                            activeScript === null || !isScriptDirty(activeScript) || scriptSaving
+                          }
+                          onClick={() => void saveActiveScript()}
+                          className="inline-flex h-6 items-center gap-1 bg-primary px-2 font-mono text-[8px] uppercase text-primary-foreground hover:opacity-90 disabled:opacity-40"
+                        >
+                          <Save size={10} aria-hidden="true" />
+                          {scriptSaving ? "Saving" : "Save"}
+                        </button>
+                      </div>
+
+                      {scriptConflict !== null && (
+                        <div
+                          role="alert"
+                          className="flex shrink-0 items-start gap-2 border-b border-danger/35 bg-danger/8 px-3 py-2 text-xs text-danger"
+                        >
+                          <AlertTriangle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+                          <span className="flex-1">{scriptConflict}</span>
+                          <button
+                            type="button"
+                            onClick={() => void reloadActiveScript()}
+                            className="shrink-0 border border-danger/40 px-2 py-0.5 font-mono text-[9px] uppercase hover:bg-danger/10"
+                          >
+                            Reload
+                          </button>
+                        </div>
+                      )}
+
                       <div className="min-h-0 flex-1">
                         <ScriptEditor
-                          value={
-                            selectedScriptId !== null
-                              ? (scriptSources[selectedScriptId] ?? LUA_STARTER)
-                              : LUA_STARTER
-                          }
+                          value={activeScript?.source ?? ""}
                           onChange={(value) => {
-                            if (selectedScriptId !== null)
-                              setScriptSources((previous) => ({
+                            if (selectedScriptId === null) return;
+                            setScriptTabs((previous) => {
+                              const tab = previous[selectedScriptId];
+                              if (tab === undefined) return previous;
+                              return {
                                 ...previous,
-                                [selectedScriptId]: value,
-                              }));
+                                [selectedScriptId]: { ...tab, source: value },
+                              };
+                            });
                           }}
                           errorLine={errorLine}
                         />
@@ -741,6 +953,11 @@ export default function App() {
           framingError={active !== null ? framingErrorsByChannel[active.id] : undefined}
         />
         <Toaster position="bottom-right" theme="system" />
+        <CreateScriptDialog
+          open={createScriptOpen}
+          onOpenChange={setCreateScriptOpen}
+          onCreate={createScript}
+        />
         <ChannelDialog
           initial={dialogInitial}
           ports={dialogPorts}

@@ -1,24 +1,24 @@
-import { Play, Star } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Play, Plus, Star } from "lucide-react";
+import { useMemo } from "react";
 import { cn } from "../../lib/utils";
 import { Hint } from "../ui/Hint";
 import type { ScriptEntry } from "./types";
 
 export interface ScriptLibraryProps {
-  /** Static entries from the workspace-directory scan (Go-owned later). */
+  /** Entries from the host workspace scan. */
   workspaceScripts: ScriptEntry[];
-  /** Favorite script ids used before the loader resolves (yaml-backed later). */
-  initialFavorites?: string[];
-  /** Load stub: returns persisted favorite ids (sync or async). */
-  onLoadFavorites?: () => string[] | Promise<string[]>;
-  /** Save stub: receives favorite ids; yaml wiring lands later. */
-  onSaveFavorites?: (ids: string[]) => void;
+  /** Persisted workspace-relative favorite paths. */
+  favorites: string[];
+  onFavoritesChange: (ids: string[]) => void;
   /** Currently open script id. */
   selectedId?: string | null;
   /** User picked a script (opens it in the editor; layout-owned). */
   onSelect?: (script: ScriptEntry) => void;
-  /** One-click run stub; the Go scripting engine lands later. */
+  /** Runs the workspace file through the host runtime. */
   onRun?: (script: ScriptEntry) => void;
+  onCreate?: () => void;
+  busyPath?: string | null;
+  error?: string | null;
 }
 
 function FavoriteIcon({ filled }: { filled: boolean }) {
@@ -33,40 +33,21 @@ function FavoriteIcon({ filled }: { filled: boolean }) {
 
 export default function ScriptLibrary({
   workspaceScripts,
-  initialFavorites = [],
-  onLoadFavorites,
-  onSaveFavorites,
+  favorites,
+  onFavoritesChange,
   selectedId = null,
   onSelect,
   onRun,
+  onCreate,
+  busyPath = null,
+  error = null,
 }: ScriptLibraryProps) {
-  // Favorites are local-state only for now; the load/save prop pair is the
-  // seam the later yaml wiring will plug into without touching this panel.
-  const [favorites, setFavorites] = useState<string[]>(initialFavorites);
   const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
 
-  useEffect(() => {
-    if (!onLoadFavorites) return;
-    let cancelled = false;
-    const loaded = onLoadFavorites();
-    if (loaded instanceof Promise) {
-      loaded.then((ids) => {
-        if (!cancelled) setFavorites(ids);
-      });
-    } else {
-      setFavorites(loaded);
-    }
-    return () => {
-      cancelled = true;
-    };
-  }, [onLoadFavorites]);
-
   function toggleFavorite(id: string) {
-    setFavorites((prev) => {
-      const next = prev.includes(id) ? prev.filter((f) => f !== id) : [...prev, id];
-      onSaveFavorites?.(next);
-      return next;
-    });
+    onFavoritesChange(
+      favorites.includes(id) ? favorites.filter((favorite) => favorite !== id) : [...favorites, id],
+    );
   }
 
   const favoriteEntries = useMemo(
@@ -121,14 +102,15 @@ export default function ScriptLibrary({
             <button
               type="button"
               aria-label={`Run ${script.name}`}
+              disabled={busyPath === script.path}
               onClick={(e) => {
                 e.stopPropagation();
                 onRun?.(script);
               }}
-              className="inline-flex min-h-8 items-center gap-1 rounded-[var(--radius)] bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:opacity-90"
+              className="inline-flex min-h-8 items-center gap-1 rounded-[var(--radius)] bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-45"
             >
               <Play size={12} aria-hidden="true" />
-              Run
+              {busyPath === script.path ? "Running" : "Run"}
             </button>
           </Hint>
         </div>
@@ -147,9 +129,31 @@ export default function ScriptLibrary({
         </section>
       )}
       <section aria-label="Workspace scripts" className="flex-1">
-        <h2 className="mb-1.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-          Workspace
-        </h2>
+        <div className="mb-1.5 flex items-center justify-between gap-2">
+          <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+            Workspace
+          </h2>
+          {onCreate && (
+            <Hint label="Create a Lua script">
+              <button
+                type="button"
+                onClick={onCreate}
+                aria-label="Create Lua script"
+                className="grid size-6 place-items-center border border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                <Plus size={12} aria-hidden="true" />
+              </button>
+            </Hint>
+          )}
+        </div>
+        {error !== null && (
+          <p
+            role="alert"
+            className="mb-2 border border-danger/35 bg-danger/8 p-2 text-xs text-danger"
+          >
+            {error}
+          </p>
+        )}
         {workspaceScripts.length === 0 ? (
           <p className="rounded-[var(--radius)] border border-dashed border-border p-3 text-sm text-muted-foreground">
             No scripts in the workspace directory yet.

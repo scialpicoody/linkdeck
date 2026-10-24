@@ -67,6 +67,85 @@ func (a ScriptAPI) RunFile(path string, timeoutMs int) error {
 	return a.svc.RunFile(path, timeoutMs)
 }
 
+// WorkspaceAPI exposes the configured Lua workspace to the Scripts view.
+// It opens the directory lazily so a bad config path becomes an actionable
+// UI error without preventing the rest of the workbench from starting.
+type WorkspaceAPI struct {
+	mu sync.Mutex
+	ws *script.Workspace
+}
+
+func (a *WorkspaceAPI) workspace() (*script.Workspace, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.ws != nil {
+		return a.ws, nil
+	}
+	root, err := script.DefaultWorkspaceRoot()
+	if err != nil {
+		return nil, err
+	}
+	ws, err := script.OpenWorkspace(root)
+	if err != nil {
+		return nil, err
+	}
+	a.ws = ws
+	return ws, nil
+}
+
+// Root returns the absolute script workspace directory.
+func (a *WorkspaceAPI) Root() (string, error) {
+	ws, err := a.workspace()
+	if err != nil {
+		return "", err
+	}
+	return ws.Root(), nil
+}
+
+// List returns workspace-relative Lua files in deterministic order.
+func (a *WorkspaceAPI) List() ([]script.WorkspaceFile, error) {
+	ws, err := a.workspace()
+	if err != nil {
+		return nil, err
+	}
+	return ws.List()
+}
+
+// Read returns source plus its optimistic-concurrency revision.
+func (a *WorkspaceAPI) Read(path string) (script.WorkspaceDocument, error) {
+	ws, err := a.workspace()
+	if err != nil {
+		return script.WorkspaceDocument{}, err
+	}
+	return ws.ReadDocument(path)
+}
+
+// Write saves source only when revision still matches the file on disk.
+func (a *WorkspaceAPI) Write(
+	path string,
+	source string,
+	revision string,
+) (script.WorkspaceDocument, error) {
+	ws, err := a.workspace()
+	if err != nil {
+		return script.WorkspaceDocument{}, err
+	}
+	return ws.WriteChecked(path, source, revision)
+}
+
+// Create adds a collision-safe top-level Lua file.
+func (a *WorkspaceAPI) Create(name string) (script.WorkspaceDocument, error) {
+	ws, err := a.workspace()
+	if err != nil {
+		return script.WorkspaceDocument{}, err
+	}
+	file, err := ws.Create(name)
+	if err != nil {
+		return script.WorkspaceDocument{}, err
+	}
+	return ws.ReadDocument(file.Path)
+}
+
 // ConfigAPI exposes presets and favorites to the UI. All read-modify-write
 // operations share one mutex so concurrent preset/favorite edits cannot
 // overwrite each other.
@@ -200,7 +279,7 @@ func main() {
 	scriptAPI := ScriptAPI{svc: script.NewScriptService(engine)}
 	streamAPI := &StreamAPI{}
 
-	mygo.Bind(Greeter{}, serialSvc, tcpSvc, scriptAPI, &ConfigAPI{}, streamAPI)
+	mygo.Bind(Greeter{}, serialSvc, tcpSvc, scriptAPI, &WorkspaceAPI{}, &ConfigAPI{}, streamAPI)
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{

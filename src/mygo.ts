@@ -176,6 +176,22 @@ export interface TcpOpenRequest {
   framing: Spec;
 }
 
+export interface WorkspaceDocument {
+  path: string;
+  name: string;
+  source: string;
+  size: number;
+  modifiedMs: number;
+  revision: string;
+}
+
+export interface WorkspaceFile {
+  path: string;
+  name: string;
+  size: number;
+  modifiedMs: number;
+}
+
 // ---- Services ----
 
 /**
@@ -339,6 +355,34 @@ export const ScriptAPI = {
   /** RunFile executes a script file with a millisecond timeout. */
   runFile(path: string, timeoutMs: number): Promise<void> {
     return call("ScriptAPI.RunFile", path, timeoutMs);
+  },
+} as const;
+
+/**
+ * WorkspaceAPI exposes the configured Lua workspace to the Scripts view.
+ * It opens the directory lazily so a bad config path becomes an actionable
+ * UI error without preventing the rest of the workbench from starting.
+ */
+export const WorkspaceAPI = {
+  /** Create adds a collision-safe top-level Lua file. */
+  create(name: string): Promise<WorkspaceDocument> {
+    return call("WorkspaceAPI.Create", name);
+  },
+  /** List returns workspace-relative Lua files in deterministic order. */
+  list(): Promise<WorkspaceFile[]> {
+    return call("WorkspaceAPI.List");
+  },
+  /** Read returns source plus its optimistic-concurrency revision. */
+  read(path: string): Promise<WorkspaceDocument> {
+    return call("WorkspaceAPI.Read", path);
+  },
+  /** Root returns the absolute script workspace directory. */
+  root(): Promise<string> {
+    return call("WorkspaceAPI.Root");
+  },
+  /** Write saves source only when revision still matches the file on disk. */
+  write(path: string, source: string, revision: string): Promise<WorkspaceDocument> {
+    return call("WorkspaceAPI.Write", path, source, revision);
   },
 } as const;
 

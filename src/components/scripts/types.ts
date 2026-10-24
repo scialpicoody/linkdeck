@@ -1,10 +1,5 @@
 /**
- * Shared types for the script-library panel (ticket #9).
- *
- * The Go scripting engine lands later: running, workspace scanning, and
- * favorites persistence are all prop stubs here. Output rows are shaped as
- * JSON-lines records so the future engine can stream `JSON.stringify(row)`
- * per line without changing this contract.
+ * Shared script workspace and runtime view types.
  */
 
 /** One runnable script in the library list. */
@@ -13,7 +8,7 @@ export interface ScriptEntry {
   id: string;
   /** Display name (file name without directory). */
   name: string;
-  /** Workspace-relative path, e.g. `scripts/at-probe.lua`. */
+  /** Workspace-relative path, e.g. `at-probe.lua`. */
   path: string;
   /** Where the entry came from. */
   origin: "workspace" | "favorite";
