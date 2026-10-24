@@ -199,6 +199,8 @@ Editable source is `resources/icon.svg`; packaged output is
 
 - One dialog covers create and edit.
 - Create selects or enters an endpoint, serial parameters, and framing.
+- Framing exposes delimiter, fixed-size, length-prefix, and
+  header-length-checksum parameters, including a shared frame-size cap.
 - Edit closes and attempts to reopen the channel with the submitted settings.
 - Failures stay visible in the dialog. Transactional reopen/rollback is not
   implemented yet.
@@ -257,12 +259,16 @@ to make an empty workbench look populated.
 
 These are implementation gaps, not reasons to change the visual direction:
 
-- The `frames` mygo event is not yet subscribed by the frontend.
 - Scripts still use demo entries and the run action is a stub.
 - Edit-channel failure does not yet restore the prior connection settings.
 - The operations dock is fixed-width rather than resizable.
 - Preset writing and TCP channel creation are not exposed in the current dialog.
-- Per-channel dropped counters are not yet fed into the status bar.
+- Channel discovery still models every polled serial device as a channel rather
+  than distinguishing devices from open channels.
+
+The frame stream now ingests live RX batches, surfaces per-channel dropped and
+framing-error counters in the status bar, and applies the dialog's framing
+configuration to serial and TCP client read loops.
 
 Future work should preserve this document's information architecture and visual
 tokens unless a new design decision explicitly supersedes it.

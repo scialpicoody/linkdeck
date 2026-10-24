@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import type { FramingKind } from "../inspector/types";
 import { type FieldOption, FieldSelect } from "../ui/FieldSelect";
-import type { ChannelFormValue } from "./types";
+import { type ChannelFormValue, DEFAULT_CHANNEL_FORM, validateChannelForm } from "./types";
 
 export interface ChannelDialogProps {
   /** Null = "open new channel"; non-null = edit existing (回填). */
@@ -29,24 +29,6 @@ const FRAMING: { value: FramingKind; label: string }[] = [
   { value: "header-checksum", label: "Header + checksum" },
 ];
 
-const FRAMING_HINT: Record<FramingKind, string> = {
-  delimiter: "Delimiter byte as hex, e.g. 0A for LF.",
-  "length-prefix": "Length-field width in bytes, e.g. 2.",
-  "fixed-size": "Frame size in bytes, e.g. 64.",
-  "header-checksum": "Checksum name, e.g. crc16.",
-};
-
-const EMPTY: ChannelFormValue = {
-  port: "",
-  baudRate: 115200,
-  dataBits: 8,
-  parity: "none",
-  stopBits: "1",
-  framing: "delimiter",
-  framingOption: "0A",
-  readTimeoutMs: 0,
-};
-
 function optionsOf(values: (string | number)[]): FieldOption[] {
   return values.map((v) => ({ value: String(v), label: String(v) }));
 }
@@ -67,7 +49,7 @@ export function ChannelDialog({
   onOpenChange,
   onSubmit,
 }: ChannelDialogProps) {
-  const [draft, setDraft] = useState<ChannelFormValue>(initial ?? EMPTY);
+  const [draft, setDraft] = useState<ChannelFormValue>(initial ?? DEFAULT_CHANNEL_FORM);
   const [presetName, setPresetName] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,14 +57,14 @@ export function ChannelDialog({
   // Re-seed the form every time the dialog opens (create vs edit switch).
   useEffect(() => {
     if (open) {
-      setDraft(initial ?? EMPTY);
+      setDraft(initial ?? DEFAULT_CHANNEL_FORM);
       setPresetName("");
       setError(null);
     }
   }, [open, initial]);
 
   const dirty = useMemo(
-    () => JSON.stringify(draft) !== JSON.stringify(initial ?? EMPTY),
+    () => JSON.stringify(draft) !== JSON.stringify(initial ?? DEFAULT_CHANNEL_FORM),
     [draft, initial],
   );
 
@@ -97,8 +79,9 @@ export function ChannelDialog({
   }
 
   async function handleSubmit(): Promise<void> {
-    if (draft.port.trim().length === 0) {
-      setError("Port is required.");
+    const validationError = validateChannelForm(draft);
+    if (validationError !== null) {
+      setError(validationError);
       return;
     }
     setSaving(true);
@@ -219,20 +202,117 @@ export function ChannelDialog({
               options={FRAMING.map((f) => ({ value: f.value, label: f.label }))}
             />
 
+            {draft.framing === "delimiter" && (
+              <div>
+                <label htmlFor="channel-delimiter" className={labelClass}>
+                  Delimiter (hex)
+                </label>
+                <input
+                  id="channel-delimiter"
+                  value={draft.delimiterHex}
+                  onChange={(e) => set("delimiterHex", e.target.value)}
+                  placeholder="0A"
+                  autoComplete="off"
+                  className={inputClass}
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Bytes that terminate each frame, e.g. 0A or 0D0A.
+                </p>
+              </div>
+            )}
+
+            {draft.framing === "fixed-size" && (
+              <div>
+                <label htmlFor="channel-fixed-size" className={labelClass}>
+                  Frame size
+                </label>
+                <input
+                  id="channel-fixed-size"
+                  type="number"
+                  min={1}
+                  value={draft.fixedSize}
+                  onChange={(e) => set("fixedSize", Number(e.target.value))}
+                  className={inputClass}
+                />
+              </div>
+            )}
+
+            {(draft.framing === "length-prefix" || draft.framing === "header-checksum") && (
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label htmlFor="channel-length-offset" className={labelClass}>
+                    Length offset
+                  </label>
+                  <input
+                    id="channel-length-offset"
+                    type="number"
+                    min={0}
+                    value={draft.lengthOffset}
+                    onChange={(e) => set("lengthOffset", Number(e.target.value))}
+                    className={inputClass}
+                  />
+                </div>
+                <FieldSelect
+                  id="channel-length-width"
+                  label="Width"
+                  value={String(draft.lengthWidth)}
+                  onValueChange={(v) => set("lengthWidth", Number(v))}
+                  options={optionsOf([1, 2, 4])}
+                />
+                <FieldSelect
+                  id="channel-length-endian"
+                  label="Endian"
+                  value={draft.lengthEndian}
+                  onValueChange={(v) => set("lengthEndian", v as ChannelFormValue["lengthEndian"])}
+                  options={[
+                    { value: "big", label: "Big" },
+                    { value: "little", label: "Little" },
+                  ]}
+                />
+              </div>
+            )}
+
+            {draft.framing === "header-checksum" && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="channel-header" className={labelClass}>
+                    Header (hex)
+                  </label>
+                  <input
+                    id="channel-header"
+                    value={draft.headerHex}
+                    onChange={(e) => set("headerHex", e.target.value)}
+                    placeholder="AA55"
+                    autoComplete="off"
+                    className={inputClass}
+                  />
+                </div>
+                <FieldSelect
+                  id="channel-checksum"
+                  label="Checksum"
+                  value={draft.checksum}
+                  onValueChange={(v) => set("checksum", v as ChannelFormValue["checksum"])}
+                  options={[
+                    { value: "xor", label: "XOR" },
+                    { value: "sum8", label: "Sum8" },
+                    { value: "crc8", label: "CRC-8" },
+                  ]}
+                />
+              </div>
+            )}
+
             <div>
-              <label htmlFor="channel-framing-opt" className={labelClass}>
-                Framing option
+              <label htmlFor="channel-max-frame" className={labelClass}>
+                Max frame size (bytes, 0 = default)
               </label>
               <input
-                id="channel-framing-opt"
-                value={draft.framingOption}
-                onChange={(e) => set("framingOption", e.target.value)}
-                autoComplete="off"
+                id="channel-max-frame"
+                type="number"
+                min={0}
+                value={draft.maxFrameSize}
+                onChange={(e) => set("maxFrameSize", Number(e.target.value))}
                 className={inputClass}
               />
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                {FRAMING_HINT[draft.framing]}
-              </p>
             </div>
           </div>
 

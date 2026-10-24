@@ -14,12 +14,13 @@ import (
 // timeout in milliseconds: 0 leaves the library default in place, negative
 // disables the timeout.
 type OpenRequest struct {
-	Port          string   `json:"port"`
-	BaudRate      int      `json:"baudRate"`
-	DataBits      int      `json:"dataBits"`
-	Parity        Parity   `json:"parity"`
-	StopBits      StopBits `json:"stopBits"`
-	ReadTimeoutMs int      `json:"readTimeoutMs"`
+	Port          string       `json:"port"`
+	BaudRate      int          `json:"baudRate"`
+	DataBits      int          `json:"dataBits"`
+	Parity        Parity       `json:"parity"`
+	StopBits      StopBits     `json:"stopBits"`
+	ReadTimeoutMs int          `json:"readTimeoutMs"`
+	Framing       framing.Spec `json:"framing"`
 }
 
 // SerialService exposes the serial transport to the frontend via mygo.Bind.
@@ -57,6 +58,14 @@ func (s *SerialService) Open(req OpenRequest) (PortInfo, error) {
 	if err := mode.Validate(); err != nil {
 		return PortInfo{}, err
 	}
+	spec := req.Framing
+	if spec.Kind == "" {
+		spec = framing.DefaultSpec()
+	}
+	framer, err := framing.New(spec)
+	if err != nil {
+		return PortInfo{}, fmt.Errorf("serial: framing: %w", err)
+	}
 	var timeout time.Duration
 	if req.ReadTimeoutMs != 0 {
 		if req.ReadTimeoutMs < 0 {
@@ -76,12 +85,9 @@ func (s *SerialService) Open(req OpenRequest) (PortInfo, error) {
 	}
 	mgr := s.stream
 	if mgr != nil {
-		framer, ferr := framing.NewDelimiter(framing.DelimiterConfig{Delimiter: []byte("\n")})
-		if ferr == nil {
-			if serr := mgr.Start(req.Port, portSource{port: p}, framer); serr != nil {
-				_ = p.Close()
-				return PortInfo{}, serr
-			}
+		if serr := mgr.Start(req.Port, portSource{port: p}, framer); serr != nil {
+			_ = p.Close()
+			return PortInfo{}, serr
 		}
 	}
 	s.ports[req.Port] = p

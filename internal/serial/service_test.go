@@ -1,11 +1,16 @@
 package serial
 
 import (
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/creack/pty"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"linkdeck/internal/framing"
+	"linkdeck/internal/script"
+	"linkdeck/internal/stream"
 )
 
 func TestServiceOpenClose(t *testing.T) {
@@ -59,4 +64,47 @@ func TestServiceValidation(t *testing.T) {
 	assert.Error(t, svc.SetReadTimeout("/dev/nope", 100))
 	_, err = svc.Status("/dev/nope")
 	require.Error(t, err)
+}
+
+func TestServiceOpenUsesFraming(t *testing.T) {
+	master, slave, err := pty.Open()
+	require.NoError(t, err)
+	defer func() { _ = master.Close() }()
+	defer func() { _ = slave.Close() }()
+
+	pool := script.NewPool()
+	defer pool.Close()
+	var mu sync.Mutex
+	var payloads []string
+	mgr := stream.NewManager(pool, func(batch stream.Batch) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, frame := range batch.Frames {
+			payloads = append(payloads, string(frame.Payload))
+		}
+	})
+	defer mgr.Close()
+
+	svc := NewSerialService()
+	svc.AttachStream(mgr)
+	_, err = svc.Open(OpenRequest{
+		Port:          slave.Name(),
+		BaudRate:      115200,
+		DataBits:      8,
+		Parity:        ParityNone,
+		StopBits:      StopOne,
+		ReadTimeoutMs: 200,
+		Framing:       framing.Spec{Kind: "delimiter", DelimiterHex: "0D0A"},
+	})
+	require.NoError(t, err)
+	defer func() { _ = svc.Close(slave.Name()) }()
+
+	_, err = master.Write([]byte("one\r\ntwo\r\n"))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(payloads) == 2
+	}, 3*time.Second, 10*time.Millisecond)
+	assert.Equal(t, []string{"one", "two"}, payloads)
 }

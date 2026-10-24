@@ -2,7 +2,12 @@ import { Code2, ScanSearch, SendHorizontal, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Toaster, toast } from "sonner";
 import type { ChannelFormValue } from "./components/channels";
-import { ChannelDialog } from "./components/channels";
+import {
+  ChannelDialog,
+  DEFAULT_CHANNEL_FORM,
+  framingFormFromPreset,
+  toFramingSpec,
+} from "./components/channels";
 import {
   base64ToBytes,
   Composer,
@@ -22,7 +27,15 @@ import { useChannels } from "./lib/channels";
 import { appendFrames, EMPTY_FRAME_BUFFER, type FrameBuffer } from "./lib/frame-store";
 import { isHostAvailable } from "./lib/host";
 import { cn } from "./lib/utils";
-import { ConfigAPI, events, type FrameDTO, type Preset, SerialService, StreamAPI } from "./mygo";
+import {
+  ConfigAPI,
+  events,
+  type FrameDTO,
+  type FramingError,
+  type Preset,
+  SerialService,
+  StreamAPI,
+} from "./mygo";
 
 const DEMO_SCRIPTS: ScriptEntry[] = [
   { id: "at-probe", name: "at-probe.lua", path: "scripts/at-probe.lua", origin: "workspace" },
@@ -48,6 +61,9 @@ export default function App() {
   } = useChannels();
   const [framesByChannel, setFramesByChannel] = useState<Record<string, FrameBuffer>>({});
   const [droppedByChannel, setDroppedByChannel] = useState<Record<string, number>>({});
+  const [framingErrorsByChannel, setFramingErrorsByChannel] = useState<
+    Record<string, FramingError>
+  >({});
   // Selected frame row → slide-over inspector (#20). Cleared on channel switch.
   const [frameSelection, setFrameSelection] = useState<{ frame: Frame; index: number } | null>(
     null,
@@ -74,6 +90,8 @@ export default function App() {
         const mapped: Record<string, ChannelFormValue> = {};
         for (const [name, p] of Object.entries(all)) {
           mapped[name] = {
+            ...DEFAULT_CHANNEL_FORM,
+            ...framingFormFromPreset(p.Framing),
             port: p.Endpoint,
             baudRate: p.Baud,
             dataBits: (p.DataBits === 5 || p.DataBits === 6 || p.DataBits === 7
@@ -81,8 +99,6 @@ export default function App() {
               : 8) as ChannelFormValue["dataBits"],
             parity: (p.Parity ?? "none") as ChannelFormValue["parity"],
             stopBits: (p.StopBits ?? "1") as ChannelFormValue["stopBits"],
-            framing: "delimiter",
-            framingOption: "0A",
             readTimeoutMs: p.ReadTimeoutMs ?? 0,
           };
         }
@@ -153,6 +169,15 @@ export default function App() {
       }
     });
   }, [addTraffic]);
+
+  // Framing failures are cumulative and non-fatal; keep the latest status
+  // visible without turning a noisy stream into a toast flood.
+  useEffect(() => {
+    if (!isHostAvailable()) return;
+    return events.streamErrors.on((error: FramingError) => {
+      setFramingErrorsByChannel((previous) => ({ ...previous, [error.channel]: error }));
+    });
+  }, []);
 
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -264,6 +289,7 @@ export default function App() {
           parity: value.parity,
           stopBits: value.stopBits,
           readTimeoutMs: value.readTimeoutMs,
+          framing: toFramingSpec(value),
         });
         setChannelState(value.port, "connected");
         openChannel(value.port);
@@ -282,14 +308,8 @@ export default function App() {
     const ch = channels.find((c) => c.id === channelDialog.id);
     if (!ch) return null;
     return {
+      ...DEFAULT_CHANNEL_FORM,
       port: ch.name,
-      baudRate: 115200,
-      dataBits: 8,
-      parity: "none",
-      stopBits: "1",
-      framing: "delimiter",
-      framingOption: "0A",
-      readTimeoutMs: 0,
     };
   }, [channelDialog, channels]);
 
@@ -505,6 +525,7 @@ export default function App() {
           channel={active}
           onResetCounters={resetCounters}
           dropped={active !== null ? (droppedByChannel[active.id] ?? 0) : 0}
+          framingError={active !== null ? framingErrorsByChannel[active.id] : undefined}
         />
         <Toaster position="bottom-right" theme="system" />
         <ChannelDialog

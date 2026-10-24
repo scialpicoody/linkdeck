@@ -46,6 +46,16 @@ export interface FramingConfig {
   Opts: Record<string, string>;
 }
 
+export interface FramingError {
+  channel: string;
+  kind: string;
+  message: string;
+  oversize: number;
+  checksum: number;
+  other: number;
+  tsMillis: number;
+}
+
 /** ListenInfo describes a bound server. */
 export interface ListenInfo {
   name: string;
@@ -80,6 +90,7 @@ export interface OpenRequest {
   parity: Parity;
   stopBits: StopBits;
   readTimeoutMs: number;
+  framing: Spec;
 }
 
 /** Parity is a JSON-friendly serial parity setting. */
@@ -120,6 +131,18 @@ export interface ReconnectConfig {
   MaxAttempts: number;
 }
 
+export interface Spec {
+  kind: string;
+  delimiterHex?: string;
+  fixedSize?: number;
+  lengthOffset?: number;
+  lengthWidth?: number;
+  lengthEndian?: string;
+  headerHex?: string;
+  checksum?: string;
+  maxFrameSize?: number;
+}
+
 /** StopBits is a JSON-friendly stop-bits setting. */
 export type StopBits = "1" | "1.5" | "2";
 
@@ -149,6 +172,7 @@ export interface TcpOpenRequest {
   maxBackoffMs: number;
   heartbeatMs: number;
   heartbeatPayload: string;
+  framing: Spec;
 }
 
 // ---- Services ----
@@ -352,4 +376,9 @@ export const events = {
    * Payloads cross as base64 strings; see script.FrameDTO.
    */
   frames: event<FrameDTO[]>("frames"),
+  /**
+   * StreamErrors carries non-fatal framing failures (oversize/checksum) and
+   * cumulative per-channel counts to the workbench.
+   */
+  streamErrors: event<FramingError>("stream-errors"),
 } as const;

@@ -21,6 +21,7 @@ package stream
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -42,6 +43,26 @@ const readMaxLen = 4096
 type Batch struct {
 	Channel string
 	Frames  []script.Frame
+}
+
+// FramingError is one non-fatal decode failure. Counts are cumulative for the
+// channel, so the UI can update a status indicator without reconstructing
+// state from a lossy event stream.
+type FramingError struct {
+	Channel  string `json:"channel"`
+	Kind     string `json:"kind"`
+	Message  string `json:"message"`
+	Oversize uint64 `json:"oversize"`
+	Checksum uint64 `json:"checksum"`
+	Other    uint64 `json:"other"`
+	TsMillis int64  `json:"tsMillis"`
+}
+
+// FramingErrorCounts is the cumulative per-channel failure set.
+type FramingErrorCounts struct {
+	Oversize uint64
+	Checksum uint64
+	Other    uint64
 }
 
 // Emit receives outbound batches. It runs on the Manager's dispatcher
@@ -83,6 +104,10 @@ type Manager struct {
 	dropped map[string]uint64
 	notify  chan struct{}
 
+	errMu      sync.Mutex
+	framingErr map[string]FramingErrorCounts
+	onFraming  func(FramingError)
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	dispWg sync.WaitGroup
@@ -95,16 +120,25 @@ func NewManager(pool *script.Pool, emit Emit) *Manager {
 		pool = script.NewPool()
 	}
 	m := &Manager{
-		pool:     pool,
-		emit:     emit,
-		channels: make(map[string]*channelState),
-		dropped:  make(map[string]uint64),
-		notify:   make(chan struct{}, 1),
+		pool:       pool,
+		emit:       emit,
+		channels:   make(map[string]*channelState),
+		dropped:    make(map[string]uint64),
+		framingErr: make(map[string]FramingErrorCounts),
+		notify:     make(chan struct{}, 1),
 	}
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 	m.dispWg.Add(1)
 	go m.dispatchLoop()
 	return m
+}
+
+// SetFramingErrorHandler installs the non-fatal framing failure sink. The
+// handler is called on the affected channel's read loop and must not block.
+func (m *Manager) SetFramingErrorHandler(fn func(FramingError)) {
+	m.errMu.Lock()
+	m.onFraming = fn
+	m.errMu.Unlock()
 }
 
 // Start begins the read loop for channel. It reports an error when the
@@ -186,6 +220,14 @@ func (m *Manager) Dropped(channel string) uint64 {
 	return m.dropped[channel]
 }
 
+// FramingErrors reports cumulative oversize/checksum/other failures for a
+// channel.
+func (m *Manager) FramingErrors(channel string) FramingErrorCounts {
+	m.errMu.Lock()
+	defer m.errMu.Unlock()
+	return m.framingErr[channel]
+}
+
 // Close stops every read loop and the dispatcher, draining nothing: queued
 // batches that Emit never consumed are discarded. Idempotent. Like Stop it
 // waits for in-flight Reads; unblock or close sources first (closing a
@@ -230,8 +272,11 @@ func (m *Manager) runLoop(ctx context.Context, channel string, src Source, st *c
 		// checksum): frames decoded before the error are still valid and
 		// MUST be processed.
 		st.mu.Lock()
-		frames, _ := st.framer.Feed(chunk)
+		frames, ferr := st.framer.Feed(chunk)
 		st.mu.Unlock()
+		if ferr != nil {
+			m.reportFramingError(channel, ferr)
+		}
 		if len(frames) == 0 {
 			continue
 		}
@@ -246,6 +291,37 @@ func (m *Manager) runLoop(ctx context.Context, channel string, src Source, st *c
 			m.enqueue(Batch{Channel: channel, Frames: unmatched})
 		}
 	}
+}
+
+func (m *Manager) reportFramingError(channel string, err error) {
+	kind := "other"
+	m.errMu.Lock()
+	counts := m.framingErr[channel]
+	switch {
+	case errors.Is(err, framing.ErrOversize):
+		kind = "oversize"
+		counts.Oversize++
+	case errors.Is(err, framing.ErrChecksum):
+		kind = "checksum"
+		counts.Checksum++
+	default:
+		counts.Other++
+	}
+	m.framingErr[channel] = counts
+	handler := m.onFraming
+	m.errMu.Unlock()
+	if handler == nil {
+		return
+	}
+	handler(FramingError{
+		Channel:  channel,
+		Kind:     kind,
+		Message:  err.Error(),
+		Oversize: counts.Oversize,
+		Checksum: counts.Checksum,
+		Other:    counts.Other,
+		TsMillis: time.Now().UnixMilli(),
+	})
 }
 
 func (m *Manager) enqueue(b Batch) {

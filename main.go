@@ -46,6 +46,10 @@ var Tick = mygo.NewEvent[time.Time]("tick")
 // Payloads cross as base64 strings; see script.FrameDTO.
 var Frames = mygo.NewEvent[[]script.FrameDTO]("frames")
 
+// StreamErrors carries non-fatal framing failures (oversize/checksum) and
+// cumulative per-channel counts to the workbench.
+var StreamErrors = mygo.NewEvent[stream.FramingError]("stream-errors")
+
 // ScriptAPI is the bound scripting surface. Sessions (Engine.Load) stay
 // Go-side until the UI grows a session surface; Run/RunFile cover the
 // script-run panel.
@@ -161,6 +165,9 @@ func main() {
 			// Best effort: a closed window ends delivery; loops keep
 			// running until their channels close.
 			_ = Frames.Emit(win, dtos)
+		})
+		mgr.SetFramingErrorHandler(func(err stream.FramingError) {
+			_ = StreamErrors.Emit(win, err)
 		})
 		streamAPI.attach(mgr)
 		serialSvc.AttachStream(mgr)

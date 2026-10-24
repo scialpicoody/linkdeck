@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"linkdeck/internal/framing"
 )
 
 // waitFor polls cond until true or the timeout elapses.
@@ -112,6 +113,23 @@ func TestClientEcho(t *testing.T) {
 	require.Empty(t, st)
 	_, err = svc.Send("echo", []byte("x"))
 	require.Error(t, err)
+}
+
+func TestClientRejectsInvalidFraming(t *testing.T) {
+	addr, stop := startEcho(t, false)
+	defer stop()
+
+	svc := NewTcpService()
+	_, err := svc.Open(OpenRequest{
+		Name:             "bad-frame",
+		Address:          addr,
+		ConnectTimeoutMs: 2000,
+		Framing:          framing.Spec{Kind: "length-prefix", LengthWidth: 3},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "framing")
+	_, err = svc.Status("bad-frame")
+	require.Error(t, err, "failed open must not leave a client registered")
 }
 
 func TestReconnectAfterServerDrop(t *testing.T) {

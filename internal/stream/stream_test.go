@@ -31,6 +31,20 @@ type scriptSource struct {
 	errAfter error
 }
 
+// oneErrorFramer returns a valid frame alongside one checksum failure, then
+// stays quiet. It exercises the Feed "frames + error" contract.
+type oneErrorFramer struct{ sent bool }
+
+func (f *oneErrorFramer) Feed([]byte) ([][]byte, error) {
+	if f.sent {
+		return nil, nil
+	}
+	f.sent = true
+	return [][]byte{[]byte("valid")}, framing.ErrChecksum
+}
+
+func (*oneErrorFramer) Reset() {}
+
 func (s *scriptSource) Read(maxLen int) ([]byte, error) {
 	s.reads.Add(1)
 	s.mu.Lock()
@@ -268,4 +282,49 @@ func TestResetKeepsMatchers(t *testing.T) {
 		}
 	}
 	close(src.unblock) // release the parked read loop before m.Close()
+}
+
+func TestFramingErrorReportedWithoutLosingFrames(t *testing.T) {
+	pool := script.NewPool()
+	defer pool.Close()
+	mu, out, emit := collectBatches()
+	m := NewManager(pool, emit)
+	defer m.Close()
+
+	errors := make(chan FramingError, 1)
+	m.SetFramingErrorHandler(func(err FramingError) { errors <- err })
+
+	src := &scriptSource{
+		chunks:  [][]byte{[]byte("payload")},
+		unblock: make(chan struct{}),
+	}
+	if err := m.Start("bad", src, &oneErrorFramer{}); err != nil {
+		t.Fatal(err)
+	}
+
+	var reported FramingError
+	select {
+	case reported = <-errors:
+	case <-time.After(3 * time.Second):
+		t.Fatal("framing error was not reported")
+	}
+	if reported.Channel != "bad" || reported.Kind != "checksum" || reported.Checksum != 1 {
+		t.Fatalf("unexpected framing error: %+v", reported)
+	}
+	if got := m.FramingErrors("bad"); got.Checksum != 1 || got.Oversize != 0 {
+		t.Fatalf("unexpected counters: %+v", got)
+	}
+
+	waitFor(t, "valid frame after framing error", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(*out) == 1 && len((*out)[0].Frames) == 1
+	})
+	mu.Lock()
+	got := string((*out)[0].Frames[0].Payload)
+	mu.Unlock()
+	if got != "valid" {
+		t.Fatalf("payload = %q, want valid", got)
+	}
+	close(src.unblock)
 }

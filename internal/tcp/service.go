@@ -19,14 +19,15 @@ import (
 // 5000). HeartbeatMs <= 0 (default) disables the heartbeat; otherwise the
 // client sends HeartbeatPayload (base64 over bindings) every HeartbeatMs.
 type OpenRequest struct {
-	Name             string `json:"name"`
-	Address          string `json:"address"`
-	ConnectTimeoutMs int    `json:"connectTimeoutMs"`
-	MaxRetries       int    `json:"maxRetries"`
-	BaseBackoffMs    int    `json:"baseBackoffMs"`
-	MaxBackoffMs     int    `json:"maxBackoffMs"`
-	HeartbeatMs      int    `json:"heartbeatMs"`
-	HeartbeatPayload []byte `json:"heartbeatPayload"`
+	Name             string       `json:"name"`
+	Address          string       `json:"address"`
+	ConnectTimeoutMs int          `json:"connectTimeoutMs"`
+	MaxRetries       int          `json:"maxRetries"`
+	BaseBackoffMs    int          `json:"baseBackoffMs"`
+	MaxBackoffMs     int          `json:"maxBackoffMs"`
+	HeartbeatMs      int          `json:"heartbeatMs"`
+	HeartbeatPayload []byte       `json:"heartbeatPayload"`
+	Framing          framing.Spec `json:"framing"`
 }
 
 // ConnInfo describes one client channel.
@@ -117,6 +118,14 @@ func (s *TcpService) Open(req OpenRequest) (ConnInfo, error) {
 	if req.Name == "" {
 		return ConnInfo{}, errors.New("tcp: client name is empty")
 	}
+	spec := req.Framing
+	if spec.Kind == "" {
+		spec = framing.DefaultSpec()
+	}
+	framer, err := framing.New(spec)
+	if err != nil {
+		return ConnInfo{}, fmt.Errorf("tcp: framing: %w", err)
+	}
 	s.mu.Lock()
 	if _, dup := s.clients[req.Name]; dup {
 		s.mu.Unlock()
@@ -142,15 +151,12 @@ func (s *TcpService) Open(req OpenRequest) (ConnInfo, error) {
 	}
 	mgr := s.stream
 	if mgr != nil {
-		framer, ferr := framing.NewDelimiter(framing.DelimiterConfig{Delimiter: []byte("\n")})
-		if ferr == nil {
-			c.SetReconnectHook(mgr.Resetter(req.Name))
-			if serr := mgr.Start(req.Name, clientSource{client: c}, framer); serr != nil {
-				s.mu.Unlock()
-				c.SetReconnectHook(nil)
-				_ = c.Close()
-				return ConnInfo{}, serr
-			}
+		c.SetReconnectHook(mgr.Resetter(req.Name))
+		if serr := mgr.Start(req.Name, clientSource{client: c}, framer); serr != nil {
+			s.mu.Unlock()
+			c.SetReconnectHook(nil)
+			_ = c.Close()
+			return ConnInfo{}, serr
 		}
 	}
 	s.clients[req.Name] = c

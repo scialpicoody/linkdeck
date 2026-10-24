@@ -1,5 +1,6 @@
 import { ArrowDown, ArrowUp, RotateCcw } from "lucide-react";
 import { type Channel, stateColor } from "../../lib/channels";
+import type { FramingError } from "../../mygo";
 import { Hint } from "../ui/Hint";
 
 interface StatusBarProps {
@@ -7,9 +8,14 @@ interface StatusBarProps {
   onResetCounters: (id: string) => void;
   /** Frames dropped by outbound-queue backpressure (per channel). */
   dropped?: number;
+  /** Latest cumulative framing failure for the active channel. */
+  framingError?: FramingError;
 }
 
-export function StatusBar({ channel, onResetCounters, dropped = 0 }: StatusBarProps) {
+export function StatusBar({ channel, onResetCounters, dropped = 0, framingError }: StatusBarProps) {
+  const framingErrorCount = framingError
+    ? framingError.oversize + framingError.checksum + framingError.other
+    : 0;
   return (
     <footer className="flex h-7 shrink-0 items-center gap-3 overflow-hidden border-t border-black/45 bg-chrome px-3 font-mono text-[9px] text-chrome-muted">
       {channel === null ? (
@@ -54,6 +60,14 @@ export function StatusBar({ channel, onResetCounters, dropped = 0 }: StatusBarPr
             </button>
           </Hint>
           {dropped > 0 && <span className="text-warning">DROP {dropped}</span>}
+          {framingErrorCount > 0 && (
+            <span
+              className="text-warning"
+              title={`${framingError?.kind ?? "framing"}: ${framingError?.message ?? ""}`}
+            >
+              FRAME ERR {framingErrorCount}
+            </span>
+          )}
           {channel.error !== undefined && (
             <span className="ml-auto truncate text-danger" role="alert">
               {channel.error}
