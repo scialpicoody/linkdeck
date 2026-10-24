@@ -9,8 +9,16 @@ import {
   SearchX,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { visibleFrames } from "../../lib/frame-view";
+import {
+  FRAME_ROW_HEIGHT,
+  framePageSize,
+  frameWindow,
+  isFrameNavigationKey,
+  nextFrameIndex,
+  scrollTopForFrame,
+} from "../../lib/frame-window";
 import { cn } from "../../lib/utils";
 import { Hint } from "../ui/Hint";
 import { asciiPreview, formatTs, frameByteLength, hexPreview } from "./format";
@@ -35,7 +43,10 @@ export default function FramePanel({
   const [codec, setCodec] = useState<FrameCodec>("ascii");
   const [dirFilter, setDirFilter] = useState<DirectionFilter>("all");
   const [query, setQuery] = useState("");
-  const endRef = useRef<HTMLLIElement>(null);
+  const listRef = useRef<HTMLOListElement>(null);
+  const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+  const pendingFocusId = useRef<string | null>(null);
+  const [viewport, setViewport] = useState({ scrollTop: 0, height: 0 });
 
   // Channel switches start with a live view; selection is owned by App.
   // biome-ignore lint/correctness/useExhaustiveDependencies: channelName is the intentional reset trigger.
@@ -49,10 +60,87 @@ export default function FramePanel({
   );
   const paused = pausedFrames !== null;
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new visible tail is the scroll trigger.
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+
+    const syncViewport = () => {
+      setViewport((current) => {
+        const next = { scrollTop: list.scrollTop, height: list.clientHeight };
+        return current.scrollTop === next.scrollTop && current.height === next.height
+          ? current
+          : next;
+      });
+    };
+
+    syncViewport();
+    const observer = new ResizeObserver(syncViewport);
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, []);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each new visible projection is the scroll trigger.
   useEffect(() => {
-    if (follow && !paused) endRef.current?.scrollIntoView({ block: "end" });
-  }, [visible.length, follow, paused]);
+    const list = listRef.current;
+    if (!list || !follow || paused) return;
+    list.scrollTop = list.scrollHeight;
+    setViewport((current) => {
+      const next = { scrollTop: list.scrollTop, height: list.clientHeight };
+      return current.scrollTop === next.scrollTop && current.height === next.height
+        ? current
+        : next;
+    });
+  }, [visible, follow, paused]);
+
+  // Focus is applied after the parent-controlled selection and virtual rows commit.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: visible identifies the rendered row set.
+  useEffect(() => {
+    const id = pendingFocusId.current;
+    if (!id) return;
+    const row = rowRefs.current.get(id);
+    if (!row) return;
+    pendingFocusId.current = null;
+    row.focus();
+  }, [selectedFrame, visible, viewport]);
+
+  const range = useMemo(
+    () => frameWindow(visible.length, viewport.scrollTop, viewport.height),
+    [visible.length, viewport.scrollTop, viewport.height],
+  );
+  const rows = visible.slice(range.startIndex, range.endIndex);
+
+  function navigateRows(event: React.KeyboardEvent<HTMLButtonElement>): void {
+    if (!isFrameNavigationKey(event.key) || !onSelectFrame) return;
+    const targetIndex = nextFrameIndex(
+      visible,
+      selectedFrame,
+      event.key,
+      framePageSize(viewport.height),
+    );
+    if (targetIndex === null) return;
+    const target = visible[targetIndex];
+    if (!target) return;
+
+    event.preventDefault();
+    if (target === selectedFrame) {
+      rowRefs.current.get(target.id)?.focus();
+      return;
+    }
+
+    const list = listRef.current;
+    if (list) {
+      list.scrollTop = scrollTopForFrame(
+        list.scrollTop,
+        list.clientHeight,
+        targetIndex,
+        FRAME_ROW_HEIGHT,
+      );
+      setViewport({ scrollTop: list.scrollTop, height: list.clientHeight });
+    }
+
+    pendingFocusId.current = target.id;
+    onSelectFrame(target);
+  }
 
   return (
     <section
@@ -186,8 +274,15 @@ export default function FramePanel({
       </div>
 
       <ol
+        ref={listRef}
         aria-label="Frame rows"
-        className="min-h-0 flex-1 overflow-y-auto bg-card font-mono text-[10px] leading-none"
+        onScroll={(event) =>
+          setViewport({
+            scrollTop: event.currentTarget.scrollTop,
+            height: event.currentTarget.clientHeight,
+          })
+        }
+        className="relative min-h-0 flex-1 overflow-y-auto bg-card font-mono text-[10px] leading-none [overflow-anchor:none]"
       >
         {visible.length === 0 ? (
           <li className="signal-grid grid min-h-full place-items-center p-5">
@@ -221,53 +316,69 @@ export default function FramePanel({
             </div>
           </li>
         ) : (
-          visible.map((frame) => {
-            const selectedRow = selectedFrame === frame;
-            const inbound = frame.dir === "in";
-            return (
-              <li key={frame.id}>
-                <button
-                  type="button"
-                  onClick={() => onSelectFrame?.(frame)}
-                  aria-current={selectedRow ? "true" : undefined}
-                  className={cn(
-                    "grid w-full items-center gap-2 border-b border-border/55 px-3 py-[7px] text-left transition-colors",
-                    ROW_GRID,
-                    selectedRow ? "bg-secondary/75" : "hover:bg-muted/60",
-                  )}
+          <>
+            <li aria-hidden="true" style={{ height: range.topSpacer }} />
+            {rows.map((frame, offset) => {
+              const absoluteIndex = range.startIndex + offset;
+              const selectedRow = selectedFrame === frame;
+              const inbound = frame.dir === "in";
+              return (
+                <li
+                  key={frame.id}
+                  aria-posinset={absoluteIndex + 1}
+                  aria-setsize={visible.length}
+                  style={{ height: FRAME_ROW_HEIGHT }}
                 >
-                  <span className="text-muted-foreground">{formatTs(frame.ts)}</span>
-                  <span
+                  <button
+                    ref={(node) => {
+                      if (node) rowRefs.current.set(frame.id, node);
+                      else rowRefs.current.delete(frame.id);
+                    }}
+                    type="button"
+                    onClick={() => onSelectFrame?.(frame)}
+                    onKeyDown={navigateRows}
+                    aria-current={selectedRow ? "true" : undefined}
                     className={cn(
-                      "flex items-center gap-1 text-[9px] font-medium",
-                      inbound ? "text-rx" : "text-tx",
+                      "grid h-full w-full items-center gap-2 border-b border-border/55 px-3 py-[7px] text-left transition-colors",
+                      ROW_GRID,
+                      selectedRow ? "bg-secondary/75" : "hover:bg-muted/60",
                     )}
                   >
-                    <span className={cn("h-3 w-0.5", inbound ? "bg-rx" : "bg-tx")} />
-                    {inbound ? "RX" : "TX"}
-                  </span>
-                  <span className="text-right text-muted-foreground/85">
-                    {frameByteLength(frame.payload)}
-                  </span>
-                  <span
-                    className={cn(
-                      "min-w-0 truncate",
-                      frame.error !== undefined
-                        ? "text-danger"
-                        : inbound
-                          ? "text-foreground"
-                          : "text-tx",
-                    )}
-                  >
-                    {frame.error ??
-                      (codec === "ascii" ? asciiPreview(frame.payload) : hexPreview(frame.payload))}
-                  </span>
-                </button>
-              </li>
-            );
-          })
+                    <span className="text-muted-foreground">{formatTs(frame.ts)}</span>
+                    <span
+                      className={cn(
+                        "flex items-center gap-1 text-[9px] font-medium",
+                        inbound ? "text-rx" : "text-tx",
+                      )}
+                    >
+                      <span className={cn("h-3 w-0.5", inbound ? "bg-rx" : "bg-tx")} />
+                      {inbound ? "RX" : "TX"}
+                    </span>
+                    <span className="text-right text-muted-foreground/85">
+                      {frameByteLength(frame.payload)}
+                    </span>
+                    <span
+                      className={cn(
+                        "min-w-0 truncate",
+                        frame.error !== undefined
+                          ? "text-danger"
+                          : inbound
+                            ? "text-foreground"
+                            : "text-tx",
+                      )}
+                    >
+                      {frame.error ??
+                        (codec === "ascii"
+                          ? asciiPreview(frame.payload)
+                          : hexPreview(frame.payload))}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+            <li aria-hidden="true" style={{ height: range.bottomSpacer }} />
+          </>
         )}
-        <li ref={endRef} aria-hidden="true" />
       </ol>
     </section>
   );
