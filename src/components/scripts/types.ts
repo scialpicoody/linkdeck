@@ -15,7 +15,7 @@ export interface ScriptEntry {
 }
 
 /** Output row kinds. `error` rows may carry a `file.lua:<line>` reference. */
-type ScriptOutputType = "log" | "tx" | "rx" | "error" | "system";
+export type ScriptOutputType = "log" | "tx" | "rx" | "unmatched" | "error" | "system";
 
 /** Frame direction from the script's point of view. */
 type ScriptDirection = "in" | "out" | "local";
@@ -26,11 +26,17 @@ type ScriptDirection = "in" | "out" | "local";
  * (`serial:…`, `tcp:…`) or is empty for local log output.
  */
 export interface ScriptOutputRow {
+  /** Stable run id; empty for session lifecycle/system output. */
+  runId: string;
+  /** Workspace-relative script path this row belongs to. */
+  script: string;
   type: ScriptOutputType;
   channel: string;
   direction: ScriptDirection;
   data: string;
   ts: number;
+  /** Explicit runtime error line, when the host supplied one. */
+  line: number | null;
 }
 
 /** Parse `{...}.lua:<line>` / `line <n>` out of an error row, if present. */

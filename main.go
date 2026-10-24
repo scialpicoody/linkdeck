@@ -50,9 +50,14 @@ var Frames = mygo.NewEvent[[]script.FrameDTO]("frames")
 // cumulative per-channel counts to the workbench.
 var StreamErrors = mygo.NewEvent[stream.FramingError]("stream-errors")
 
-// ScriptAPI is the bound scripting surface. Sessions (Engine.Load) stay
-// Go-side until the UI grows a session surface; Run/RunFile cover the
-// script-run panel.
+// ScriptOutput carries structured rows scoped to their run/script.
+var ScriptOutput = mygo.NewEvent[script.OutputRow]("script-output")
+
+// ScriptRunStatus carries queued/running/final run-state transitions.
+var ScriptRunStatus = mygo.NewEvent[script.RunInfo]("script-run-status")
+
+// ScriptAPI is the bound scripting surface for source/file runs and
+// long-lived sessions.
 type ScriptAPI struct {
 	svc *script.ScriptService
 }
@@ -65,6 +70,46 @@ func (a ScriptAPI) Run(src string, timeoutMs int) error {
 // RunFile executes a script file with a millisecond timeout.
 func (a ScriptAPI) RunFile(path string, timeoutMs int) error {
 	return a.svc.RunFile(path, timeoutMs)
+}
+
+// StartRun starts a fresh-source run and returns its stable run id.
+func (a ScriptAPI) StartRun(src string, script string, timeoutMs int) (script.RunInfo, error) {
+	return a.svc.StartSource(src, script, timeoutMs)
+}
+
+// StartFile starts a workspace-relative file run.
+func (a ScriptAPI) StartFile(path string, timeoutMs int) (script.RunInfo, error) {
+	return a.svc.StartFile(path, timeoutMs)
+}
+
+// CancelRun requests cancellation of a queued or running run.
+func (a ScriptAPI) CancelRun(id string) (script.RunInfo, error) {
+	return a.svc.CancelRun(id)
+}
+
+// RunStatus reads one retained run record.
+func (a ScriptAPI) RunStatus(id string) (script.RunInfo, error) {
+	return a.svc.RunStatus(id)
+}
+
+// LoadSession loads or reuses a long-lived workspace session.
+func (a ScriptAPI) LoadSession(path string) (script.SessionInfo, error) {
+	return a.svc.LoadSession(path)
+}
+
+// CallSession starts one long-lived session function call.
+func (a ScriptAPI) CallSession(path, fn string, timeoutMs int) (script.RunInfo, error) {
+	return a.svc.CallSession(path, fn, timeoutMs)
+}
+
+// CloseSession closes one long-lived session.
+func (a ScriptAPI) CloseSession(path string) error {
+	return a.svc.CloseSession(path)
+}
+
+// Sessions lists live long-lived sessions.
+func (a ScriptAPI) Sessions() []script.SessionInfo {
+	return a.svc.Sessions()
 }
 
 // WorkspaceAPI exposes the configured Lua workspace to the Scripts view.
@@ -276,10 +321,17 @@ func main() {
 		Serial: link.NewSerialTransport(serialSvc),
 		TCP:    link.NewTCPTransport(tcpSvc),
 	})
-	scriptAPI := ScriptAPI{svc: script.NewScriptService(engine)}
+	scriptSvc := script.NewScriptService(engine)
+	workspaceAPI := &WorkspaceAPI{}
+	if ws, wsErr := workspaceAPI.workspace(); wsErr != nil {
+		log.Printf("script workspace: %v; file runs disabled until configured", wsErr)
+	} else {
+		scriptSvc.SetWorkspace(ws)
+	}
+	scriptAPI := ScriptAPI{svc: scriptSvc}
 	streamAPI := &StreamAPI{}
 
-	mygo.Bind(Greeter{}, serialSvc, tcpSvc, scriptAPI, &WorkspaceAPI{}, &ConfigAPI{}, streamAPI)
+	mygo.Bind(Greeter{}, serialSvc, tcpSvc, scriptAPI, workspaceAPI, &ConfigAPI{}, streamAPI)
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
@@ -307,6 +359,12 @@ func main() {
 		mgr.SetFramingErrorHandler(func(err stream.FramingError) {
 			_ = StreamErrors.Emit(win, err)
 		})
+		scriptSvc.SetOutputHandler(func(row script.OutputRow) {
+			_ = ScriptOutput.Emit(win, row)
+		})
+		scriptSvc.SetStatusHandler(func(info script.RunInfo) {
+			_ = ScriptRunStatus.Emit(win, info)
+		})
 		streamAPI.attach(mgr)
 		serialSvc.AttachStream(mgr)
 		tcpSvc.AttachStream(mgr)
@@ -321,4 +379,5 @@ func main() {
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)
 	}
+	engine.Close()
 }

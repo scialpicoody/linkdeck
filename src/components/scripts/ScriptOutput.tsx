@@ -17,6 +17,7 @@ const TYPE_STYLE: Record<ScriptOutputRow["type"], string> = {
   log: "text-foreground",
   tx: "text-accent-foreground",
   rx: "text-foreground",
+  unmatched: "text-warning",
   error: "text-red-500 dark:text-red-400",
   system: "text-muted-foreground",
 };
@@ -28,6 +29,13 @@ function formatTime(ts: number): string {
     `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` +
     `.${pad(d.getMilliseconds(), 3)}`
   );
+}
+
+function errorLine(row: ScriptOutputRow): number | null {
+  if (row.type !== "error") return null;
+  if (row.line !== null) return row.line;
+  const match = ERROR_LINE_RE.exec(row.data);
+  return match?.[1] ? Number(match[1]) : null;
 }
 
 export default function ScriptOutput({ rows, onErrorLine }: ScriptOutputProps) {
@@ -45,7 +53,7 @@ export default function ScriptOutput({ rows, onErrorLine }: ScriptOutputProps) {
     () =>
       rows.map((r) => ({
         row: r,
-        line: r.type === "error" ? (r.data.match(ERROR_LINE_RE)?.[1] ?? null) : null,
+        line: errorLine(r),
       })),
     [rows],
   );

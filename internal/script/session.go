@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"sync"
 	"time"
 
@@ -23,6 +25,7 @@ const sessionMetatable = "LinkDeckSession"
 type execReg struct {
 	ctx    context.Context
 	cancel context.CancelFunc
+	output func(ExecutionOutput)
 }
 
 // expired reports whether the owning execution's deadline passed. A nil
@@ -37,15 +40,40 @@ func expired(ctx context.Context) bool {
 // execMu, sessions under their own mutex, fresh states single-use), so one
 // registration per LState is enough. Close cancels every registration.
 func (e *Engine) beginExec(L *lua.LState, timeout time.Duration) context.Context {
+	return e.beginExecContext(context.Background(), L, timeout, nil)
+}
+
+func (e *Engine) beginExecContext(
+	parent context.Context,
+	L *lua.LState,
+	timeout time.Duration,
+	output func(ExecutionOutput),
+) context.Context {
 	if timeout <= 0 {
 		timeout = defaultScriptTimeout
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	e.exMu.Lock()
-	e.execs[L] = execReg{ctx: ctx, cancel: cancel}
+	e.execs[L] = execReg{ctx: ctx, cancel: cancel, output: output}
 	e.exMu.Unlock()
 	L.SetContext(ctx)
 	return ctx
+}
+
+// emitOutput sends one structured callback row to the active execution's
+// sink. Inactive host/exec contexts intentionally produce no row.
+func (e *Engine) emitOutput(L *lua.LState, row ExecutionOutput) {
+	e.exMu.Lock()
+	sink := e.execs[L].output
+	e.exMu.Unlock()
+	if sink == nil {
+		return
+	}
+	row.TsMillis = NowMillis()
+	sink(row)
 }
 
 // endExec disarms L and drops its registration.
@@ -99,7 +127,31 @@ func runErrorOf(ctx context.Context, err error) *RunError {
 		runErr.Message = apiErr.Object.String()
 		runErr.StackTrace = apiErr.StackTrace
 	}
+	runErr.Line = errorLine(runErr.StackTrace)
 	return runErr
+}
+
+var errorLineRE = regexp.MustCompile(`(?m)(?:\.lua:|:)(\d+):`)
+
+// ErrorLine extracts the first source line from a RunError stack/message.
+func ErrorLine(err error) int {
+	var runErr *RunError
+	if !errors.As(err, &runErr) || runErr == nil {
+		return 0
+	}
+	if runErr.Line > 0 {
+		return runErr.Line
+	}
+	return errorLine(runErr.StackTrace)
+}
+
+func errorLine(stack string) int {
+	match := errorLineRE.FindStringSubmatch(stack)
+	if len(match) != 2 {
+		return 0
+	}
+	line, _ := strconv.Atoi(match[1])
+	return line
 }
 
 // closeOwnedBy closes every channel handle minted through owner and drops
@@ -132,12 +184,22 @@ func (e *Engine) closeOwnedBy(owner *lua.LState) {
 // leaves open are closed on teardown. Failures report as *RunError, same as
 // Run; a missing/unreadable file reports a plain Go error.
 func (e *Engine) RunFile(path string, timeout time.Duration) error {
+	return e.RunFileContext(context.Background(), path, timeout, nil)
+}
+
+// RunFileContext is RunFile with caller cancellation and structured output.
+func (e *Engine) RunFileContext(
+	parent context.Context,
+	path string,
+	timeout time.Duration,
+	output func(ExecutionOutput),
+) error {
 	if e.closed.Load() {
 		return ErrClosed
 	}
 	L := lua.NewState(lua.Options{SkipOpenLibs: true})
 	e.installOnto(L)
-	ctx := e.beginExec(L, timeout)
+	ctx := e.beginExecContext(parent, L, timeout, output)
 	derr := L.DoFile(path)
 	// Read the deadline before endExec cancels it: teardown must not turn
 	// ordinary chunk errors into timeouts.
@@ -233,7 +295,7 @@ func (e *Engine) execFile(abs string, timeout time.Duration) (*lua.LState, time.
 	}
 	l := lua.NewState(lua.Options{SkipOpenLibs: true})
 	e.installOnto(l)
-	ctx := e.beginExec(l, timeout)
+	ctx := e.beginExecContext(context.Background(), l, timeout, e.sessionOutputFor(abs))
 	derr := l.DoFile(abs)
 	var runErr *RunError
 	if derr != nil {
@@ -280,6 +342,17 @@ func (s *Session) maybeReloadLocked() error {
 // slices) and reports a timeout *RunError the same nil,"timeout" family the
 // Lua surface returns. The session stays usable after any failure.
 func (s *Session) Call(fn string, timeout time.Duration, args ...any) ([]any, error) {
+	return s.CallContext(context.Background(), fn, timeout, nil, args...)
+}
+
+// CallContext is Call with caller cancellation and structured output.
+func (s *Session) CallContext(
+	parent context.Context,
+	fn string,
+	timeout time.Duration,
+	output func(ExecutionOutput),
+	args ...any,
+) ([]any, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -297,7 +370,7 @@ func (s *Session) Call(fn string, timeout time.Duration, args ...any) ([]any, er
 		}
 		lvargs = append(lvargs, lv)
 	}
-	ctx := s.eng.beginExec(l, timeout)
+	ctx := s.eng.beginExecContext(parent, l, timeout, output)
 	defer s.eng.endExec(l)
 	top := l.GetTop()
 	if err := l.CallByParam(lua.P{

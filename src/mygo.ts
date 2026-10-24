@@ -94,6 +94,17 @@ export interface OpenRequest {
   framing: Spec;
 }
 
+export interface OutputRow {
+  runId: string;
+  script: string;
+  type: string;
+  channel: string;
+  direction: string;
+  data: string;
+  line: number;
+  tsMillis: number;
+}
+
 /** Parity is a JSON-friendly serial parity setting. */
 export type Parity = "none" | "odd" | "even" | "mark" | "space";
 
@@ -130,6 +141,24 @@ export interface ReconnectConfig {
   InitialMs: number;
   MaxMs: number;
   MaxAttempts: number;
+}
+
+export interface RunInfo {
+  id: string;
+  script: string;
+  kind: string;
+  state: string;
+  error: string;
+  line: number;
+  startedMs: number;
+  endedMs: number;
+}
+
+export interface SessionInfo {
+  path: string;
+  name: string;
+  state: string;
+  modifiedMs: number;
 }
 
 export interface Spec {
@@ -343,11 +372,26 @@ export const TcpService = {
 } as const;
 
 /**
- * ScriptAPI is the bound scripting surface. Sessions (Engine.Load) stay
- * Go-side until the UI grows a session surface; Run/RunFile cover the
- * script-run panel.
+ * ScriptAPI is the bound scripting surface for source/file runs and
+ * long-lived sessions.
  */
 export const ScriptAPI = {
+  /** CallSession starts one long-lived session function call. */
+  callSession(path: string, fn: string, timeoutMs: number): Promise<RunInfo> {
+    return call("ScriptAPI.CallSession", path, fn, timeoutMs);
+  },
+  /** CancelRun requests cancellation of a queued or running run. */
+  cancelRun(id: string): Promise<RunInfo> {
+    return call("ScriptAPI.CancelRun", id);
+  },
+  /** CloseSession closes one long-lived session. */
+  closeSession(path: string): Promise<void> {
+    return call("ScriptAPI.CloseSession", path);
+  },
+  /** LoadSession loads or reuses a long-lived workspace session. */
+  loadSession(path: string): Promise<SessionInfo> {
+    return call("ScriptAPI.LoadSession", path);
+  },
   /** Run executes Lua source with a millisecond timeout. */
   run(src: string, timeoutMs: number): Promise<void> {
     return call("ScriptAPI.Run", src, timeoutMs);
@@ -355,6 +399,22 @@ export const ScriptAPI = {
   /** RunFile executes a script file with a millisecond timeout. */
   runFile(path: string, timeoutMs: number): Promise<void> {
     return call("ScriptAPI.RunFile", path, timeoutMs);
+  },
+  /** RunStatus reads one retained run record. */
+  runStatus(id: string): Promise<RunInfo> {
+    return call("ScriptAPI.RunStatus", id);
+  },
+  /** Sessions lists live long-lived sessions. */
+  sessions(): Promise<SessionInfo[]> {
+    return call("ScriptAPI.Sessions");
+  },
+  /** StartFile starts a workspace-relative file run. */
+  startFile(path: string, timeoutMs: number): Promise<RunInfo> {
+    return call("ScriptAPI.StartFile", path, timeoutMs);
+  },
+  /** StartRun starts a fresh-source run and returns its stable run id. */
+  startRun(src: string, script: string, timeoutMs: number): Promise<RunInfo> {
+    return call("ScriptAPI.StartRun", src, script, timeoutMs);
   },
 } as const;
 
@@ -442,4 +502,8 @@ export const events = {
    * cumulative per-channel counts to the workbench.
    */
   streamErrors: event<FramingError>("stream-errors"),
+  /** ScriptOutput carries structured rows scoped to their run/script. */
+  scriptOutput: event<OutputRow>("script-output"),
+  /** ScriptRunStatus carries queued/running/final run-state transitions. */
+  scriptRunStatus: event<RunInfo>("script-run-status"),
 } as const;

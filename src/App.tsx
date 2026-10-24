@@ -27,6 +27,7 @@ import {
   ScriptEditor,
   ScriptLibrary,
   ScriptOutput,
+  ScriptRunControls,
 } from "./components/scripts";
 import { HintsProvider } from "./components/ui/Hint";
 import {
@@ -37,6 +38,7 @@ import {
 } from "./lib/channels";
 import { appendFrames, EMPTY_FRAME_BUFFER, type FrameBuffer } from "./lib/frame-store";
 import { isHostAvailable } from "./lib/host";
+import { appendScriptOutput, outputForScript, scriptOutputFromHost } from "./lib/script-output";
 import {
   entryFromWorkspaceFile,
   isScriptDirty,
@@ -51,9 +53,13 @@ import {
   events,
   type FrameDTO,
   type FramingError,
+  type OutputRow as HostScriptOutputRow,
   type OpenRequest,
   type Preset,
+  type RunInfo,
+  ScriptAPI,
   SerialService,
+  type SessionInfo,
   StreamAPI,
   WorkspaceAPI,
   type WorkspaceFile,
@@ -166,6 +172,12 @@ export default function App() {
   const [scriptSaving, setScriptSaving] = useState(false);
   const [scriptConflict, setScriptConflict] = useState<string | null>(null);
   const [createScriptOpen, setCreateScriptOpen] = useState(false);
+  const [scriptTimeoutMs, setScriptTimeoutMs] = useState(5000);
+  const [scriptFunctionName, setScriptFunctionName] = useState("main");
+  const [scriptRunBusy, setScriptRunBusy] = useState(false);
+  const [runsById, setRunsById] = useState<Record<string, RunInfo>>({});
+  const [latestRunByScript, setLatestRunByScript] = useState<Record<string, string>>({});
+  const [sessionsByPath, setSessionsByPath] = useState<Record<string, SessionInfo>>({});
   const [outputRows, setOutputRows] = useState<ScriptOutputRow[]>([]);
   const [errorLine, setErrorLine] = useState<number | null>(null);
   // Channel dialog: null = closed; {mode:"create"} or {mode:"edit", id}.
@@ -241,6 +253,28 @@ export default function App() {
       });
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isHostAvailable()) return;
+    const offOutput = events.scriptOutput.on((hostRow: HostScriptOutputRow) => {
+      const row = scriptOutputFromHost(hostRow);
+      if (row === null) return;
+      setOutputRows((previous) => appendScriptOutput(previous, [row]));
+    });
+    const offStatus = events.scriptRunStatus.on((info: RunInfo) => {
+      setRunsById((previous) => ({ ...previous, [info.id]: info }));
+      setLatestRunByScript((previous) => ({ ...previous, [info.script]: info.id }));
+    });
+    void ScriptAPI.sessions()
+      .then((sessions) => {
+        setSessionsByPath(Object.fromEntries(sessions.map((session) => [session.path, session])));
+      })
+      .catch(() => {});
+    return () => {
+      offOutput();
+      offStatus();
     };
   }, []);
 
@@ -370,19 +404,29 @@ export default function App() {
     [active, addTraffic],
   );
 
-  const handleRun = useCallback((script: ScriptEntry) => {
-    // Stub until the Go scripting engine lands: record the request visibly.
-    setOutputRows((rows) => [
-      ...rows,
-      {
-        type: "log",
-        channel: "scripts",
-        direction: "out",
-        data: `run requested: ${script.path} (scripting engine pending)`,
-        ts: Date.now(),
-      },
-    ]);
+  const rememberRun = useCallback((info: RunInfo) => {
+    setRunsById((previous) => ({ ...previous, [info.id]: info }));
+    setLatestRunByScript((previous) => ({ ...previous, [info.script]: info.id }));
   }, []);
+
+  const handleRun = useCallback(
+    async (script: ScriptEntry): Promise<void> => {
+      if (!isHostAvailable()) {
+        toast.error("No Go host: script runs are unavailable in browser mode.");
+        return;
+      }
+      setScriptRunBusy(true);
+      try {
+        const info = await ScriptAPI.startFile(script.path, scriptTimeoutMs);
+        rememberRun(info);
+      } catch (error) {
+        toast.error(`Run ${script.name} failed`, { description: messageOf(error) });
+      } finally {
+        setScriptRunBusy(false);
+      }
+    },
+    [rememberRun, scriptTimeoutMs],
+  );
 
   const showScriptDocument = useCallback((tab: ScriptTab) => {
     setScriptTabs((previous) => ({ ...previous, [tab.id]: tab }));
@@ -483,6 +527,98 @@ export default function App() {
   }
 
   const activeScript = selectedScriptId === null ? null : (scriptTabs[selectedScriptId] ?? null);
+  const activeRunId = activeScript === null ? undefined : latestRunByScript[activeScript.path];
+  const activeRun = activeRunId === undefined ? null : (runsById[activeRunId] ?? null);
+  const activeSession = activeScript === null ? null : (sessionsByPath[activeScript.path] ?? null);
+  const activeOutputRows =
+    activeScript === null ? [] : outputForScript(outputRows, activeScript.path);
+
+  async function runActiveSource(): Promise<void> {
+    if (activeScript === null) return;
+    setScriptRunBusy(true);
+    try {
+      const info = await ScriptAPI.startRun(
+        activeScript.source,
+        activeScript.path,
+        scriptTimeoutMs,
+      );
+      rememberRun(info);
+    } catch (error) {
+      toast.error(`Run ${activeScript.name} failed`, { description: messageOf(error) });
+    } finally {
+      setScriptRunBusy(false);
+    }
+  }
+
+  async function runActiveFile(): Promise<void> {
+    if (activeScript === null) return;
+    setScriptRunBusy(true);
+    try {
+      const info = await ScriptAPI.startFile(activeScript.path, scriptTimeoutMs);
+      rememberRun(info);
+    } catch (error) {
+      toast.error(`Run ${activeScript.name} failed`, { description: messageOf(error) });
+    } finally {
+      setScriptRunBusy(false);
+    }
+  }
+
+  async function cancelActiveRun(): Promise<void> {
+    if (activeRun === null) return;
+    try {
+      // The final cancelled status arrives on the status event; no local
+      // optimistic transition can masquerade as a completed run.
+      await ScriptAPI.cancelRun(activeRun.id);
+    } catch (error) {
+      toast.error("Cancel run failed", { description: messageOf(error) });
+    }
+  }
+
+  async function loadActiveSession(): Promise<void> {
+    if (activeScript === null) return;
+    setScriptRunBusy(true);
+    try {
+      const session = await ScriptAPI.loadSession(activeScript.path);
+      setSessionsByPath((previous) => ({ ...previous, [session.path]: session }));
+      toast.success(`Session loaded for ${activeScript.name}`);
+    } catch (error) {
+      toast.error("Load session failed", { description: messageOf(error) });
+    } finally {
+      setScriptRunBusy(false);
+    }
+  }
+
+  async function callActiveSession(): Promise<void> {
+    if (activeScript === null || activeSession === null) return;
+    setScriptRunBusy(true);
+    try {
+      const info = await ScriptAPI.callSession(
+        activeScript.path,
+        scriptFunctionName.trim(),
+        scriptTimeoutMs,
+      );
+      rememberRun(info);
+    } catch (error) {
+      toast.error("Session call failed", { description: messageOf(error) });
+    } finally {
+      setScriptRunBusy(false);
+    }
+  }
+
+  async function closeActiveSession(): Promise<void> {
+    if (activeScript === null) return;
+    try {
+      await ScriptAPI.closeSession(activeScript.path);
+      setSessionsByPath((previous) => {
+        const next = { ...previous };
+        delete next[activeScript.path];
+        return next;
+      });
+      toast.success(`Session closed for ${activeScript.name}`);
+    } catch (error) {
+      toast.error("Close session failed", { description: messageOf(error) });
+    }
+  }
 
   useEffect(() => {
     function beforeUnload(event: BeforeUnloadEvent) {
@@ -789,8 +925,13 @@ export default function App() {
                     onFavoritesChange={updateFavorites}
                     selectedId={selectedScriptId}
                     onSelect={(script) => void openScriptTab(script)}
-                    onRun={handleRun}
+                    onRun={(script) => void handleRun(script)}
                     onCreate={() => setCreateScriptOpen(true)}
+                    busyPath={
+                      activeRun?.state === "running" || activeRun?.state === "queued"
+                        ? activeRun.script
+                        : null
+                    }
                     error={workspaceError}
                   />
                 </div>
@@ -876,6 +1017,26 @@ export default function App() {
                         })}
                       </div>
 
+                      {activeScript !== null && (
+                        <ScriptRunControls
+                          activeRun={activeRun}
+                          session={activeSession}
+                          timeoutMs={scriptTimeoutMs}
+                          functionName={scriptFunctionName}
+                          busy={scriptRunBusy}
+                          onTimeoutChange={(value) =>
+                            setScriptTimeoutMs(Number.isFinite(value) ? Math.max(1, value) : 5000)
+                          }
+                          onFunctionNameChange={setScriptFunctionName}
+                          onRunSource={() => void runActiveSource()}
+                          onRunFile={() => void runActiveFile()}
+                          onCancel={() => void cancelActiveRun()}
+                          onLoadSession={() => void loadActiveSession()}
+                          onCallSession={() => void callActiveSession()}
+                          onCloseSession={() => void closeActiveSession()}
+                        />
+                      )}
+
                       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border bg-card px-2">
                         <span className="min-w-0 flex-1 truncate font-mono text-[9px] text-muted-foreground">
                           {activeScript?.path ?? ""}
@@ -935,8 +1096,22 @@ export default function App() {
                         />
                       </div>
 
-                      <div className="h-44 shrink-0 overflow-hidden border-t border-border bg-card">
-                        <ScriptOutput rows={outputRows} onErrorLine={setErrorLine} />
+                      <div className="flex h-48 shrink-0 flex-col overflow-hidden border-t border-border bg-card">
+                        <div className="flex h-7 shrink-0 items-center justify-between border-b border-border bg-panel-raised px-2">
+                          <span className="eyebrow text-muted-foreground">
+                            Script output · {activeOutputRows.length}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setOutputRows([])}
+                            className="font-mono text-[8px] uppercase text-muted-foreground hover:text-foreground"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                        <div className="min-h-0 flex-1">
+                          <ScriptOutput rows={activeOutputRows} onErrorLine={setErrorLine} />
+                        </div>
                       </div>
                     </>
                   )}

@@ -70,9 +70,42 @@ type Engine struct {
 
 	output func(string)
 	logger func(string)
+	// sessionOutput resolves a fresh structured sink for each session state
+	// execution, including automatic reloads.
+	sessionOutput func(path string) func(ExecutionOutput)
 
 	closeOnce sync.Once
 	closed    atomic.Bool
+}
+
+// SetSessionOutputFactory installs structured output for session
+// load/reload executions. The factory is called per file so the host can
+// attach script-path metadata without parsing log strings.
+func (e *Engine) SetSessionOutputFactory(fn func(path string) func(ExecutionOutput)) {
+	e.exMu.Lock()
+	e.sessionOutput = fn
+	e.exMu.Unlock()
+}
+
+func (e *Engine) sessionOutputFor(path string) func(ExecutionOutput) {
+	e.exMu.Lock()
+	factory := e.sessionOutput
+	e.exMu.Unlock()
+	if factory == nil {
+		return nil
+	}
+	return factory(path)
+}
+
+// ExecutionOutput is one structured output row emitted by a Lua callback.
+// The ScriptService adds run/script metadata before crossing the bindings.
+type ExecutionOutput struct {
+	Type      string
+	Channel   string
+	Direction string
+	Data      string
+	Line      int
+	TsMillis  int64
 }
 
 // NewEngine builds an Engine and installs the ticket #4 surface: serial
@@ -98,11 +131,50 @@ func NewEngine(opts EngineOptions) *Engine {
 	}
 	e.pool.SetUnmatchedHandler(func(f Frame) {
 		e.output(fmt.Sprintf("%s %s %dB %x", f.Channel, f.Dir, len(f.Payload), f.Payload))
+		e.emitUnmatched(f)
 	})
 	e.execs = make(map[*lua.LState]execReg)
 	e.sessions = make(map[string]*Session)
 	e.installOnto(e.L)
 	return e
+}
+
+// emitUnmatched routes an unmatched frame only to active executions that
+// own a handle for the same target. Ordinary Monitor traffic therefore
+// never appears in an unrelated script run's output.
+func (e *Engine) emitUnmatched(f Frame) {
+	e.exMu.Lock()
+	type active struct {
+		L    *lua.LState
+		sink func(ExecutionOutput)
+	}
+	activeExecs := make([]active, 0, len(e.execs))
+	for L, reg := range e.execs {
+		if reg.output != nil && !expired(reg.ctx) {
+			activeExecs = append(activeExecs, active{L: L, sink: reg.output})
+		}
+	}
+	e.exMu.Unlock()
+	for _, exec := range activeExecs {
+		if !e.ownsTarget(exec.L, f.Channel) {
+			continue
+		}
+		exec.sink(ExecutionOutput{
+			Type: "unmatched", Channel: f.Channel, Direction: "in",
+			Data: string(f.Payload), TsMillis: NowMillis(),
+		})
+	}
+}
+
+func (e *Engine) ownsTarget(owner *lua.LState, target string) bool {
+	e.hmu.Lock()
+	defer e.hmu.Unlock()
+	for _, b := range e.handles {
+		if b.owner == owner && b.target == target {
+			return true
+		}
+	}
+	return false
 }
 
 // Pool exposes the matcher pool for host-driven pumps (future transports).
@@ -131,6 +203,7 @@ type RunError struct {
 	Message    string
 	StackTrace string
 	Timeout    bool
+	Line       int
 	apiErr     *lua.ApiError
 }
 
@@ -159,12 +232,23 @@ func (e *RunError) Unwrap() error {
 // abort between poll slices; other blocking host I/O is not preempted (see
 // package doc). PCall isolation keeps the engine reusable after any error.
 func (e *Engine) Run(src string, timeout time.Duration) error {
+	return e.RunContext(context.Background(), src, timeout, nil)
+}
+
+// RunContext executes src under both a hard timeout and the caller's
+// cancellation context. output receives callback-level log/TX/RX rows.
+func (e *Engine) RunContext(
+	parent context.Context,
+	src string,
+	timeout time.Duration,
+	output func(ExecutionOutput),
+) error {
 	if e.closed.Load() {
 		return ErrClosed
 	}
 	e.execMu.Lock()
 	defer e.execMu.Unlock()
-	ctx := e.beginExec(e.L, timeout)
+	ctx := e.beginExecContext(parent, e.L, timeout, output)
 	defer e.endExec(e.L)
 	if err := e.L.DoString(src); err != nil {
 		return runErrorOf(ctx, err)
@@ -370,6 +454,9 @@ func (e *Engine) luaSend(L *lua.LState) int {
 		L.Push(lua.LString(err.Error()))
 		return 1
 	}
+	e.emitOutput(L, ExecutionOutput{
+		Type: "tx", Channel: b.table + ":" + b.target, Direction: "out", Data: data,
+	})
 	L.Push(lua.LNil)
 	return 1
 }
@@ -392,6 +479,9 @@ func (e *Engine) luaRecv(L *lua.LState) int {
 		L.Push(lua.LString(expectErrString(err)))
 		return 2
 	}
+	e.emitOutput(L, ExecutionOutput{
+		Type: "rx", Channel: b.table + ":" + b.target, Direction: "in", Data: string(data),
+	})
 	L.Push(lua.LString(string(data)))
 	L.Push(lua.LNil)
 	return 2
@@ -488,6 +578,9 @@ func (e *Engine) luaSendExpect(L *lua.LState) int {
 		L.Push(lua.LString(err.Error()))
 		return 2
 	}
+	e.emitOutput(L, ExecutionOutput{
+		Type: "tx", Channel: b.table + ":" + b.target, Direction: "out", Data: data,
+	})
 	e.doExpect(L, b, pattern, mode, timeoutMs)
 	return 2
 }
@@ -524,6 +617,10 @@ func (e *Engine) doExpect(L *lua.LState, b *binding, pattern string, mode MatchM
 		L.Push(lua.LString(expectErrString(err)))
 		return
 	}
+	e.emitOutput(L, ExecutionOutput{
+		Type: "rx", Channel: b.table + ":" + b.target, Direction: "in",
+		Data: string(frame.Payload),
+	})
 	L.Push(lua.LString(string(frame.Payload)))
 	L.Push(lua.LNil)
 }
@@ -719,7 +816,9 @@ func (e *Engine) luaLog(L *lua.LState) int {
 			parts = append(parts, v.String())
 		}
 	}
-	e.logger(strings.Join(parts, "\t"))
+	text := strings.Join(parts, "\t")
+	e.logger(text)
+	e.emitOutput(L, ExecutionOutput{Type: "log", Direction: "local", Data: text})
 	return 0
 }
 
@@ -947,11 +1046,33 @@ func openOptions(tbl *lua.LTable) OpenOptions {
 // integrator binds this type once the surface settles.
 type ScriptService struct {
 	eng *Engine
+	ws  *Workspace
+
+	mu       sync.Mutex
+	runs     map[string]*runRecord
+	runSeq   uint64
+	output   func(OutputRow)
+	status   func(RunInfo)
+	sessions map[string]struct{}
 }
 
 // NewScriptService returns a ScriptService over eng.
 func NewScriptService(eng *Engine) *ScriptService {
-	return &ScriptService{eng: eng}
+	svc := &ScriptService{
+		eng:      eng,
+		runs:     make(map[string]*runRecord),
+		sessions: make(map[string]struct{}),
+	}
+	eng.SetSessionOutputFactory(func(abs string) func(ExecutionOutput) {
+		return func(row ExecutionOutput) {
+			svc.emitOutput(OutputRow{
+				Script: svc.relativeScriptPath(abs), Type: row.Type, Channel: row.Channel,
+				Direction: row.Direction, Data: row.Data, Line: row.Line,
+				TsMillis: row.TsMillis,
+			})
+		}
+	})
+	return svc
 }
 
 // Run executes src with timeoutMs (<=0 selects the engine default) and
@@ -965,13 +1086,21 @@ func (s *ScriptService) Run(src string, timeoutMs int) error {
 // timeoutMs (<=0 selects the engine default). The state is destroyed after
 // the run: globals do not leak between runs.
 func (s *ScriptService) RunFile(path string, timeoutMs int) error {
-	return s.eng.RunFile(path, time.Duration(timeoutMs)*time.Millisecond)
+	abs, err := s.workspacePath(path)
+	if err != nil {
+		return err
+	}
+	return s.eng.RunFile(abs, time.Duration(timeoutMs)*time.Millisecond)
 }
 
 // Load returns the session bound to path, creating and executing it on
 // first use. See Engine.Load for the registry and reload contract.
 func (s *ScriptService) Load(path string) (*Session, error) {
-	return s.eng.Load(path)
+	abs, err := s.workspacePath(path)
+	if err != nil {
+		return nil, err
+	}
+	return s.eng.Load(abs)
 }
 
 // Feed offers an externally received frame to the script matchers.
