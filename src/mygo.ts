@@ -4,6 +4,20 @@ import { call, event } from "mygo-runtime";
 
 // ---- Types ----
 
+export interface AutomationCommand {
+  name: string;
+  codec: string;
+  payload: string;
+  lineEnding?: string;
+  description?: string;
+  updatedAtMs?: number;
+}
+
+export interface AutomationLibrary {
+  commands: AutomationCommand[];
+  sequences: AutomationSequence[];
+}
+
 export interface AutomationRunInfo {
   id: string;
   name: string;
@@ -17,6 +31,28 @@ export interface AutomationRunInfo {
   bytesSent: number;
   matched: number;
   error?: string;
+}
+
+export interface AutomationSequence {
+  name: string;
+  description?: string;
+  steps: AutomationStep[];
+  repeat: number;
+  intervalMs?: number;
+  continuous?: boolean;
+  updatedAtMs?: number;
+}
+
+export interface AutomationStep {
+  kind: string;
+  payload?: string;
+  codec?: string;
+  lineEnding?: string;
+  mode?: string;
+  pattern?: string;
+  delayMs?: number;
+  timeoutMs?: number;
+  continueOnError?: boolean;
 }
 
 /**
@@ -526,6 +562,18 @@ export const WorkspaceAPI = {
  * overwrite each other.
  */
 export const ConfigAPI = {
+  /** AutomationLibrary returns persisted reusable Commands and Sequences. */
+  automationLibrary(): Promise<AutomationLibrary> {
+    return call("ConfigAPI.AutomationLibrary");
+  },
+  /** DeleteAutomationCommand removes one reusable payload. */
+  deleteAutomationCommand(name: string): Promise<void> {
+    return call("ConfigAPI.DeleteAutomationCommand", name);
+  },
+  /** DeleteAutomationSequence removes one reusable Sequence. */
+  deleteAutomationSequence(name: string): Promise<void> {
+    return call("ConfigAPI.DeleteAutomationSequence", name);
+  },
   /** DeletePreset removes one named preset. */
   deletePreset(name: string): Promise<void> {
     return call("ConfigAPI.DeletePreset", name);
@@ -538,9 +586,25 @@ export const ConfigAPI = {
   presets(): Promise<Record<string, Preset>> {
     return call("ConfigAPI.Presets");
   },
+  /** RenameAutomationCommand renames a reusable payload without changing its body. */
+  renameAutomationCommand(oldName: string, newName: string): Promise<void> {
+    return call("ConfigAPI.RenameAutomationCommand", oldName, newName);
+  },
+  /** RenameAutomationSequence renames a reusable Sequence without changing its body. */
+  renameAutomationSequence(oldName: string, newName: string): Promise<void> {
+    return call("ConfigAPI.RenameAutomationSequence", oldName, newName);
+  },
   /** RenamePreset preserves the preset body under a new name. */
   renamePreset(oldName: string, newName: string): Promise<void> {
     return call("ConfigAPI.RenamePreset", oldName, newName);
+  },
+  /** SaveAutomationCommand inserts or replaces one reusable payload. */
+  saveAutomationCommand(command: AutomationCommand): Promise<void> {
+    return call("ConfigAPI.SaveAutomationCommand", command);
+  },
+  /** SaveAutomationSequence inserts or replaces one reusable Sequence. */
+  saveAutomationSequence(sequence: AutomationSequence): Promise<void> {
+    return call("ConfigAPI.SaveAutomationSequence", sequence);
   },
   /** SavePreset validates and atomically inserts or replaces one preset. */
   savePreset(name: string, preset: Preset): Promise<void> {

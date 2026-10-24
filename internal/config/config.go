@@ -75,11 +75,12 @@ type Preset struct {
 	HeartbeatPayload string          `yaml:"heartbeatPayload,omitempty"`
 }
 
-// Config is the schema-v1 document: named channel presets plus ordered
-// script-favorite paths.
+// Config is the schema-v1 document: named channel presets, ordered
+// script-favorite paths, and reusable automation definitions.
 type Config struct {
-	Presets   map[string]Preset `yaml:"presets,omitempty"`
-	Favorites []string          `yaml:"favorites,omitempty"`
+	Presets    map[string]Preset `yaml:"presets,omitempty"`
+	Favorites  []string          `yaml:"favorites,omitempty"`
+	Automation AutomationLibrary `yaml:"automation,omitempty"`
 }
 
 // ExplicitArgs carries per-open overrides. A nil pointer (or nil map)
@@ -118,7 +119,14 @@ func DefaultPreset() Preset {
 
 // DefaultConfig returns the empty-but-valid configuration.
 func DefaultConfig() Config {
-	return Config{Presets: map[string]Preset{}, Favorites: []string{}}
+	return Config{
+		Presets:   map[string]Preset{},
+		Favorites: []string{},
+		Automation: AutomationLibrary{
+			Commands:  []AutomationCommand{},
+			Sequences: []AutomationSequence{},
+		},
+	}
 }
 
 // ConfigPath reports os.UserConfigDir()/linkdeck/config.yaml.
@@ -164,6 +172,12 @@ func LoadFrom(path string) (Config, error) {
 	}
 	if cfg.Favorites == nil {
 		cfg.Favorites = []string{}
+	}
+	if cfg.Automation.Commands == nil {
+		cfg.Automation.Commands = []AutomationCommand{}
+	}
+	if cfg.Automation.Sequences == nil {
+		cfg.Automation.Sequences = []AutomationSequence{}
 	}
 	return cfg, nil
 }

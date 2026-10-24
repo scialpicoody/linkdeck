@@ -1,6 +1,8 @@
 import { CornerDownLeft, History, Pencil, Plus, Send, Trash2 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { isHostAvailable } from "../../lib/host";
 import { cn } from "../../lib/utils";
+import { type AutomationCommand, ConfigAPI } from "../../mygo";
 import type { NewlineSuffix, SendCodec } from "./types";
 
 export interface ComposerProps {
@@ -16,6 +18,7 @@ interface QuickSend {
   label: string;
   text: string;
   codec: SendCodec;
+  suffix: NewlineSuffix;
 }
 
 const HISTORY_CAP = 50;
@@ -37,6 +40,54 @@ function writeLocal(key: string, value: unknown): void {
   } catch {
     // Persistence is best-effort in restricted webviews.
   }
+}
+
+function readQuickSends(): QuickSend[] {
+  const raw = readLocal<Array<Partial<QuickSend>>>(QUICK_STORAGE_KEY, []);
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    if (
+      typeof item.id !== "string" ||
+      typeof item.label !== "string" ||
+      typeof item.text !== "string"
+    ) {
+      return [];
+    }
+    return [
+      {
+        id: item.id,
+        label: item.label,
+        text: item.text,
+        codec: item.codec === "hex" ? "hex" : "ascii",
+        suffix:
+          item.suffix === "none" || item.suffix === "crlf" || item.suffix === "lf"
+            ? item.suffix
+            : "lf",
+      },
+    ];
+  });
+}
+
+function commandsFromHost(commands: AutomationCommand[]): QuickSend[] {
+  return commands.map((command) => ({
+    id: `command:${command.name}`,
+    label: command.name,
+    text: command.payload,
+    codec: command.codec === "hex" ? "hex" : "ascii",
+    suffix:
+      command.lineEnding === "none" || command.lineEnding === "crlf" ? command.lineEnding : "lf",
+  }));
+}
+
+async function saveHostCommand(item: QuickSend): Promise<void> {
+  if (!isHostAvailable()) return;
+  await ConfigAPI.saveAutomationCommand({
+    name: item.label,
+    codec: item.codec,
+    payload: item.text,
+    lineEnding: item.suffix,
+    description: "Transmit quick send",
+  });
 }
 
 function suffixLabel(suffix: NewlineSuffix): string {
@@ -69,7 +120,9 @@ export default function Composer({ channelName, canSend, sending, error, onSend 
   const [histIdx, setHistIdx] = useState(-1);
   const [showHistory, setShowHistory] = useState(false);
   const [hexError, setHexError] = useState<string | null>(null);
-  const [quickSends, setQuickSends] = useState<QuickSend[]>(() => readLocal(QUICK_STORAGE_KEY, []));
+  const [quickSends, setQuickSends] = useState<QuickSend[]>(readQuickSends);
+  const quickSendsRef = useRef(quickSends);
+  quickSendsRef.current = quickSends;
   const [editingQuickId, setEditingQuickId] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -78,6 +131,30 @@ export default function Composer({ channelName, canSend, sending, error, onSend 
     () => quickSends.find((item) => item.id === editingQuickId) ?? null,
     [quickSends, editingQuickId],
   );
+
+  useEffect(() => {
+    if (!isHostAvailable()) return;
+    let cancelled = false;
+    void ConfigAPI.automationLibrary()
+      .then((library) => {
+        if (cancelled) return;
+        const host = commandsFromHost(library.commands);
+        const hostNames = new Set(host.map((item) => item.label));
+        const localOnly = quickSendsRef.current.filter((item) => !hostNames.has(item.label));
+        const merged = [...host, ...localOnly];
+        if (merged.length > 0) {
+          setQuickSends(merged);
+          writeLocal(QUICK_STORAGE_KEY, merged);
+        }
+        for (const item of localOnly) {
+          void saveHostCommand(item).catch(() => {});
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function validateHex(value: string): boolean {
     const compact = value.replace(/\s+/g, "");
@@ -111,10 +188,10 @@ export default function Composer({ channelName, canSend, sending, error, onSend 
     });
   }
 
-  function submit(targetText = text, targetCodec = codec): void {
+  function submit(targetText = text, targetCodec = codec, targetSuffix = suffix): void {
     if (targetText.trim().length === 0 || !canSend || sending) return;
     if (targetCodec === "hex" && !validateHex(targetText)) return;
-    onSend({ ascii: targetCodec, text: targetText, suffix });
+    onSend({ ascii: targetCodec, text: targetText, suffix: targetSuffix });
     remember(targetText, targetCodec);
     setHistIdx(-1);
     setShowHistory(false);
@@ -134,10 +211,12 @@ export default function Composer({ channelName, canSend, sending, error, onSend 
     if (text.trim().length === 0) return;
     if (editingQuick !== null) {
       const next = quickSends.map((item) =>
-        item.id === editingQuick.id ? { ...item, text, codec } : item,
+        item.id === editingQuick.id ? { ...item, text, codec, suffix } : item,
       );
       setQuickSends(next);
       writeLocal(QUICK_STORAGE_KEY, next);
+      const updated = next.find((item) => item.id === editingQuick.id);
+      if (updated) void saveHostCommand(updated).catch(() => {});
       setEditingQuickId(null);
       return;
     }
@@ -149,16 +228,20 @@ export default function Composer({ channelName, canSend, sending, error, onSend 
         label: `${codec.toUpperCase()} ${String(quickSends.length + 1).padStart(2, "0")}`,
         text,
         codec,
+        suffix,
       },
     ];
     setQuickSends(next);
     setEditingQuickId(nextId);
     writeLocal(QUICK_STORAGE_KEY, next);
+    const saved = next.find((item) => item.id === nextId);
+    if (saved) void saveHostCommand(saved).catch(() => {});
   }
 
   function loadQuick(item: QuickSend): void {
     setText(item.text);
     setCodec(item.codec);
+    setSuffix(item.suffix);
     if (item.codec === "hex") validateHex(item.text);
     else setHexError(null);
     setHistIdx(-1);
@@ -170,6 +253,10 @@ export default function Composer({ channelName, canSend, sending, error, onSend 
     setQuickSends(next);
     if (editingQuickId === id) setEditingQuickId(null);
     writeLocal(QUICK_STORAGE_KEY, next);
+    const removed = quickSends.find((item) => item.id === id);
+    if (removed && isHostAvailable()) {
+      void ConfigAPI.deleteAutomationCommand(removed.label).catch(() => {});
+    }
   }
 
   return (
@@ -373,7 +460,7 @@ export default function Composer({ channelName, canSend, sending, error, onSend 
                   </button>
                   <button
                     type="button"
-                    onClick={() => submit(item.text, item.codec)}
+                    onClick={() => submit(item.text, item.codec, item.suffix)}
                     disabled={!canSend || sending}
                     title="Send shortcut now"
                     aria-label={`Send shortcut ${item.label}`}

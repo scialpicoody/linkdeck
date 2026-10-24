@@ -189,7 +189,8 @@ Editable source is `resources/icon.svg`; packaged output is
 - ASCII supports None/LF/CRLF; HEX sends bytes verbatim.
 - Invalid HEX stays local and never reaches the transport.
 - History is per codec, capped at 50 entries.
-- Quick-send entries persist locally and preserve their codec.
+- Quick-send entries persist as host Commands when available, with codec and
+  line ending; localStorage remains the browser-only fallback.
 - `Cmd/Ctrl+Enter` sends. `Cmd/Ctrl+Up/Down` recalls history.
 - A failed TX creates a visible error row, an inline error, and a toast.
 
@@ -214,6 +215,8 @@ Editable source is `resources/icon.svg`; packaged output is
   Channel capture without duplicating ordinary unmatched stream frames.
 - Active and recent runs expose current step, TX/RX totals, latency, errors, and
   a bounded event timeline scoped to the Channel.
+- Named Sequences persist atomically in config; editing a saved name renames
+  the entry, and the current unsaved draft survives renderer reloads locally.
 
 ### StatusBar
 

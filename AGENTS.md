@@ -95,7 +95,7 @@ Use the vocabulary in `CONTEXT.md` (Channel, Handle, Frame, Framing, Matcher, Co
 
 ### Configuration
 
-YAML lives at `os.UserConfigDir()/linkdeck/config.yaml`. Load failures (missing or corrupt) warn and fall back to defaults — never refuse to start. Saves are atomic (temp file + rename). `Resolve` merges explicit open args over a preset over built-in defaults, in that precedence. `main.go` exposes favorites/presets via `ConfigAPI`.
+YAML lives at `os.UserConfigDir()/linkdeck/config.yaml`. Load failures (missing or corrupt) warn and fall back to defaults — never refuse to start. Saves are atomic (temp file + rename). `Resolve` merges explicit open args over a preset over built-in defaults, in that precedence. `main.go` exposes presets, script favorites, reusable Commands, and reusable Sequences via `ConfigAPI`.
 
 ### Frontend
 

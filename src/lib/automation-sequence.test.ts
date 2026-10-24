@@ -7,6 +7,8 @@ import {
   createExpectStep,
   createSendStep,
   createSequenceDraft,
+  draftFromPersistedSequence,
+  draftToPersistedSequence,
   draftToRunSpec,
   reorderSteps,
   validateSequenceDraft,
@@ -243,6 +245,40 @@ describe("draftToRunSpec", () => {
       continueOnError: false,
     });
     expect(result.spec.steps).toHaveLength(3);
+  });
+});
+
+describe("persisted Sequence conversion", () => {
+  it("round-trips editable codec and matcher fields without encoding payloads", () => {
+    const draft = validDraft();
+    const persisted = draftToPersistedSequence(draft);
+    expect(persisted.issues).toEqual([]);
+    if (persisted.sequence === null) throw new Error("test setup requires a sequence");
+    expect(persisted.sequence.steps[0]).toMatchObject({
+      kind: "send",
+      payload: "AT",
+      codec: "ascii",
+      lineEnding: "crlf",
+    });
+
+    const loaded = draftFromPersistedSequence(persisted.sequence);
+    expect(loaded).toMatchObject({
+      name: "Probe",
+      repeat: 1,
+      intervalMs: 0,
+      continuous: false,
+    });
+    expect(loaded.steps[2]).toMatchObject({
+      kind: "expect",
+      mode: "prefix",
+      pattern: "OK",
+    });
+  });
+
+  it("does not require a Channel when saving a reusable Sequence", () => {
+    const persisted = draftToPersistedSequence(validDraft());
+    expect(persisted.sequence).not.toBeNull();
+    expect(persisted.issues).toEqual([]);
   });
 });
 

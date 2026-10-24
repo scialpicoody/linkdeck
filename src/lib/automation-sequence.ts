@@ -1,4 +1,10 @@
-import type { RunSpec, Step, Target } from "../mygo";
+import type {
+  AutomationSequence as PersistedAutomationSequence,
+  AutomationStep as PersistedAutomationStep,
+  RunSpec,
+  Step,
+  Target,
+} from "../mygo";
 import type { ChannelConfig, ChannelKind } from "./channels";
 
 const AUTOMATION_MAX_STEPS = 256;
@@ -41,6 +47,7 @@ export type AutomationStepDraft = SendStepDraft | DelayStepDraft | ExpectStepDra
 
 export interface AutomationSequenceDraft {
   name: string;
+  description: string;
   steps: AutomationStepDraft[];
   repeat: number;
   intervalMs: number;
@@ -108,6 +115,7 @@ export function createExpectStep(overrides: Partial<ExpectStepDraft> = {}): Expe
 export function createSequenceDraft(name = "Sequence 1"): AutomationSequenceDraft {
   return {
     name,
+    description: "",
     steps: [createSendStep()],
     repeat: 1,
     intervalMs: 0,
@@ -383,6 +391,103 @@ export function draftToRunSpec(
     spec: {
       name: draft.name.trim(),
       target,
+      steps,
+      repeat: draft.repeat,
+      intervalMs: draft.intervalMs,
+      continuous: draft.continuous,
+    },
+    issues: [],
+  };
+}
+
+function draftStepFromPersisted(step: PersistedAutomationStep): AutomationStepDraft {
+  const base = {
+    id: nextDraftStepId(),
+    continueOnError: step.continueOnError === true,
+  };
+  if (step.kind === "delay") {
+    return {
+      ...base,
+      kind: "delay",
+      delayMs: Number.isFinite(step.delayMs) ? (step.delayMs ?? 0) : 0,
+    };
+  }
+  if (step.kind === "expect") {
+    const mode = step.mode === "regex" || step.mode === "pattern" ? step.mode : ("prefix" as const);
+    return {
+      ...base,
+      kind: "expect",
+      mode,
+      pattern: step.pattern ?? "",
+      timeoutMs: Number.isFinite(step.timeoutMs) ? (step.timeoutMs ?? 1000) : 1000,
+      continueOnError: step.continueOnError === true,
+    };
+  }
+  const codec = step.codec === "hex" ? "hex" : "ascii";
+  const lineEnding =
+    step.lineEnding === "none" || step.lineEnding === "crlf" ? step.lineEnding : "lf";
+  return {
+    ...base,
+    kind: "send",
+    payload: step.payload ?? "",
+    codec,
+    lineEnding,
+  };
+}
+
+/** Load a persisted Sequence into a fresh editor draft. */
+export function draftFromPersistedSequence(
+  sequence: PersistedAutomationSequence,
+): AutomationSequenceDraft {
+  return {
+    name: sequence.name,
+    description: sequence.description ?? "",
+    steps: sequence.steps.map(draftStepFromPersisted),
+    repeat: sequence.repeat > 0 ? sequence.repeat : 1,
+    intervalMs: sequence.intervalMs ?? 0,
+    continuous: sequence.continuous === true,
+  };
+}
+
+export interface PersistedSequenceResult {
+  sequence: PersistedAutomationSequence | null;
+  issues: AutomationValidationIssue[];
+}
+
+/** Validate and freeze a draft into the persisted editor shape. */
+export function draftToPersistedSequence(draft: AutomationSequenceDraft): PersistedSequenceResult {
+  const issues = validateSequenceDraft(draft, null).filter((issue) => issue.field !== "target");
+  if (issues.length > 0) return { sequence: null, issues };
+
+  const steps: PersistedAutomationStep[] = draft.steps.map((step) => {
+    if (step.kind === "send") {
+      return {
+        kind: "send",
+        payload: step.payload,
+        codec: step.codec,
+        lineEnding: step.lineEnding,
+        continueOnError: step.continueOnError === true,
+      };
+    }
+    if (step.kind === "delay") {
+      return {
+        kind: "delay",
+        delayMs: step.delayMs,
+        continueOnError: step.continueOnError === true,
+      };
+    }
+    return {
+      kind: "expect",
+      mode: step.mode,
+      pattern: step.pattern,
+      timeoutMs: step.timeoutMs,
+      continueOnError: step.continueOnError,
+    };
+  });
+  return {
+    sequence: {
+      name: draft.name.trim(),
+      description: draft.description.trim(),
       steps,
       repeat: draft.repeat,
       intervalMs: draft.intervalMs,

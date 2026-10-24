@@ -3,17 +3,20 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowUp,
+  BookMarked,
   Clock,
   LoaderCircle,
   Pause,
   Play,
+  Plus,
   Radio,
   RefreshCw,
+  Save,
   Send,
   Square,
   Trash2,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   type AutomationController,
@@ -37,12 +40,19 @@ import {
   createExpectStep,
   createSendStep,
   createSequenceDraft,
+  draftFromPersistedSequence,
+  draftToPersistedSequence,
   draftToRunSpec,
   reorderSteps,
   validateSequenceDraft,
 } from "../../lib/automation-sequence";
 import { cn } from "../../lib/utils";
-import type { Event as AutomationEvent, Target } from "../../mygo";
+import {
+  type Event as AutomationEvent,
+  type AutomationSequence,
+  ConfigAPI,
+  type Target,
+} from "../../mygo";
 import { Hint } from "../ui/Hint";
 
 export interface SequencePanelProps {
@@ -61,6 +71,26 @@ const INPUT =
 const NUMBER_INPUT = `${INPUT} w-20 tabular-nums`;
 const CHECKBOX =
   "size-3 rounded-none border-input bg-card text-primary accent-[var(--primary)] focus:ring-1 focus:ring-ring";
+const DRAFT_STORAGE_KEY = "linkdeck.automation-sequence-draft.v1";
+
+function readStoredDraft(): AutomationSequenceDraft {
+  try {
+    const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+    if (raw === null) return createSequenceDraft();
+    const parsed = JSON.parse(raw) as Partial<AutomationSequenceDraft>;
+    if (!Array.isArray(parsed.steps)) return createSequenceDraft();
+    return {
+      ...createSequenceDraft(typeof parsed.name === "string" ? parsed.name : "Sequence 1"),
+      description: typeof parsed.description === "string" ? parsed.description : "",
+      steps: parsed.steps,
+      repeat: Number.isFinite(parsed.repeat) ? Number(parsed.repeat) : 1,
+      intervalMs: Number.isFinite(parsed.intervalMs) ? Number(parsed.intervalMs) : 0,
+      continuous: parsed.continuous === true,
+    };
+  } catch {
+    return createSequenceDraft();
+  }
+}
 
 const RUN_STYLE: Record<string, string> = {
   queued: "text-muted-foreground",
@@ -616,8 +646,11 @@ function StepEditor({
 }
 
 export function SequencePanelView({ channel, controller }: SequencePanelViewProps) {
-  const [draft, setDraft] = useState<AutomationSequenceDraft>(() => createSequenceDraft());
+  const [draft, setDraft] = useState<AutomationSequenceDraft>(readStoredDraft);
   const [showIssues, setShowIssues] = useState(false);
+  const [library, setLibrary] = useState<AutomationSequence[]>([]);
+  const [loadedName, setLoadedName] = useState<string | null>(null);
+  const [libraryBusy, setLibraryBusy] = useState(false);
 
   const target = useMemo(() => automationTargetFromChannel(channel), [channel]);
   const conversion = useMemo(() => draftToRunSpec(draft, target), [draft, target]);
@@ -625,6 +658,27 @@ export function SequencePanelView({ channel, controller }: SequencePanelViewProp
   const runs = automationRunViews(controller.projection, target?.channel);
   const selectedRun =
     runs.find((view) => view.run.id === controller.selectedRunId) ?? activeRun ?? runs[0] ?? null;
+
+  useEffect(() => {
+    if (!controller.available) return;
+    let cancelled = false;
+    void ConfigAPI.automationLibrary()
+      .then((result) => {
+        if (!cancelled) setLibrary(result.sequences);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [controller.available]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+    } catch {
+      // Draft persistence is best-effort in restricted webviews.
+    }
+  }, [draft]);
 
   function updateDraft(updater: (current: AutomationSequenceDraft) => AutomationSequenceDraft) {
     setDraft(updater);
@@ -659,6 +713,71 @@ export function SequencePanelView({ channel, controller }: SequencePanelViewProp
       ...current,
       steps: current.steps.filter((_, itemIndex) => itemIndex !== index),
     }));
+  }
+
+  function newSequence() {
+    setDraft(createSequenceDraft());
+    setLoadedName(null);
+    setShowIssues(false);
+  }
+
+  function loadSequence(name: string) {
+    const sequence = library.find((item) => item.name === name);
+    if (sequence === undefined) return;
+    setDraft(draftFromPersistedSequence(sequence));
+    setLoadedName(sequence.name);
+    setShowIssues(false);
+  }
+
+  async function saveSequence() {
+    const result = draftToPersistedSequence(draft);
+    if (result.sequence === null) {
+      setShowIssues(true);
+      toast.error("Sequence is not ready", {
+        description: result.issues[0]?.message ?? "Fix the highlighted fields.",
+      });
+      return;
+    }
+    setLibraryBusy(true);
+    try {
+      const nextName = result.sequence.name;
+      if (loadedName !== null && loadedName !== nextName) {
+        await ConfigAPI.renameAutomationSequence(loadedName, nextName);
+      }
+      await ConfigAPI.saveAutomationSequence(result.sequence);
+      setLibrary((current) => {
+        const index = current.findIndex((item) => item.name === nextName);
+        if (index < 0) return [...current, result.sequence as AutomationSequence];
+        return current.map((item, itemIndex) =>
+          itemIndex === index ? (result.sequence as AutomationSequence) : item,
+        );
+      });
+      setLoadedName(nextName);
+      toast.success(`Saved Sequence ${nextName}`);
+    } catch (caught) {
+      toast.error("Save Sequence failed", {
+        description: caught instanceof Error ? caught.message : String(caught),
+      });
+    } finally {
+      setLibraryBusy(false);
+    }
+  }
+
+  async function deleteSequence() {
+    if (loadedName === null) return;
+    setLibraryBusy(true);
+    try {
+      await ConfigAPI.deleteAutomationSequence(loadedName);
+      setLibrary((current) => current.filter((item) => item.name !== loadedName));
+      setLoadedName(null);
+      toast.info(`Deleted Sequence ${loadedName}`);
+    } catch (caught) {
+      toast.error("Delete Sequence failed", {
+        description: caught instanceof Error ? caught.message : String(caught),
+      });
+    } finally {
+      setLibraryBusy(false);
+    }
   }
 
   async function startSequence() {
@@ -734,6 +853,65 @@ export function SequencePanelView({ channel, controller }: SequencePanelViewProp
         )}
       </div>
 
+      <div className="flex shrink-0 items-center gap-1 border-b border-border bg-card px-2 py-1">
+        <BookMarked size={11} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+        <label className="min-w-0 flex-1">
+          <span className="sr-only">Saved Sequence library</span>
+          <select
+            value={loadedName ?? ""}
+            onChange={(event) => {
+              if (event.target.value === "") newSequence();
+              else loadSequence(event.target.value);
+            }}
+            disabled={!controller.available || libraryBusy}
+            className={cn(INPUT, "w-full text-[9px]")}
+          >
+            <option value="">New / unsaved Sequence</option>
+            {library.map((sequence) => (
+              <option key={sequence.name} value={sequence.name}>
+                {sequence.name} · {sequence.steps.length} steps
+              </option>
+            ))}
+          </select>
+        </label>
+        <Hint label="Start a new unsaved Sequence">
+          <button
+            type="button"
+            onClick={newSequence}
+            aria-label="New Sequence"
+            className="grid size-7 place-items-center border border-border bg-card text-muted-foreground hover:text-foreground"
+          >
+            <Plus size={11} aria-hidden="true" />
+          </button>
+        </Hint>
+        <Hint label="Save Sequence">
+          <button
+            type="button"
+            onClick={() => void saveSequence()}
+            disabled={!controller.available || libraryBusy}
+            aria-label="Save Sequence"
+            className="grid size-7 place-items-center border border-border bg-card text-muted-foreground hover:text-primary disabled:opacity-40"
+          >
+            {libraryBusy ? (
+              <LoaderCircle size={11} className="animate-spin" aria-hidden="true" />
+            ) : (
+              <Save size={11} aria-hidden="true" />
+            )}
+          </button>
+        </Hint>
+        <Hint label="Delete saved Sequence">
+          <button
+            type="button"
+            onClick={() => void deleteSequence()}
+            disabled={!controller.available || libraryBusy || loadedName === null}
+            aria-label="Delete saved Sequence"
+            className="grid size-7 place-items-center border border-border bg-card text-muted-foreground hover:text-danger disabled:opacity-30"
+          >
+            <Trash2 size={11} aria-hidden="true" />
+          </button>
+        </Hint>
+      </div>
+
       <RunStrip
         controller={controller}
         targetChannel={target?.channel ?? null}
@@ -765,6 +943,20 @@ export function SequencePanelView({ channel, controller }: SequencePanelViewProp
                 updateDraft((current) => ({ ...current, name: event.target.value }))
               }
               aria-invalid={showIssues && draft.name.trim().length === 0}
+              autoComplete="off"
+              className={cn(INPUT, "w-full")}
+            />
+          </label>
+          <label className="mb-1.5 block">
+            <span className="mb-0.5 block font-mono text-[8px] uppercase text-muted-foreground">
+              Description
+            </span>
+            <input
+              value={draft.description}
+              onChange={(event) =>
+                updateDraft((current) => ({ ...current, description: event.target.value }))
+              }
+              placeholder="What this Sequence verifies or exercises"
               autoComplete="off"
               className={cn(INPUT, "w-full")}
             />

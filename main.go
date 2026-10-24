@@ -234,6 +234,73 @@ func (a *ConfigAPI) Favorites() []string {
 	return cfg.Favorites
 }
 
+// AutomationLibrary returns persisted reusable Commands and Sequences.
+func (a *ConfigAPI) AutomationLibrary() config.AutomationLibrary {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Printf("config: %v; using defaults", err)
+	}
+	return config.CloneAutomationLibrary(cfg.Automation)
+}
+
+// SaveAutomationCommand inserts or replaces one reusable payload.
+func (a *ConfigAPI) SaveAutomationCommand(command config.AutomationCommand) error {
+	return a.updateAutomation(func(cfg *config.Config) error {
+		return config.SaveAutomationCommand(cfg, command)
+	})
+}
+
+// DeleteAutomationCommand removes one reusable payload.
+func (a *ConfigAPI) DeleteAutomationCommand(name string) error {
+	return a.updateAutomation(func(cfg *config.Config) error {
+		return config.DeleteAutomationCommand(cfg, name)
+	})
+}
+
+// RenameAutomationCommand renames a reusable payload without changing its body.
+func (a *ConfigAPI) RenameAutomationCommand(oldName, newName string) error {
+	return a.updateAutomation(func(cfg *config.Config) error {
+		return config.RenameAutomationCommand(cfg, oldName, newName)
+	})
+}
+
+// SaveAutomationSequence inserts or replaces one reusable Sequence.
+func (a *ConfigAPI) SaveAutomationSequence(sequence config.AutomationSequence) error {
+	return a.updateAutomation(func(cfg *config.Config) error {
+		return config.SaveAutomationSequence(cfg, sequence)
+	})
+}
+
+// DeleteAutomationSequence removes one reusable Sequence.
+func (a *ConfigAPI) DeleteAutomationSequence(name string) error {
+	return a.updateAutomation(func(cfg *config.Config) error {
+		return config.DeleteAutomationSequence(cfg, name)
+	})
+}
+
+// RenameAutomationSequence renames a reusable Sequence without changing its body.
+func (a *ConfigAPI) RenameAutomationSequence(oldName, newName string) error {
+	return a.updateAutomation(func(cfg *config.Config) error {
+		return config.RenameAutomationSequence(cfg, oldName, newName)
+	})
+}
+
+func (a *ConfigAPI) updateAutomation(update func(*config.Config) error) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Printf("config: %v; overwriting with defaults", err)
+		cfg = config.DefaultConfig()
+	}
+	if err := update(&cfg); err != nil {
+		return err
+	}
+	return config.Save(cfg)
+}
+
 // SetFavorites persists script-favorite paths (atomic write).
 func (a *ConfigAPI) SetFavorites(favs []string) error {
 	a.mu.Lock()
