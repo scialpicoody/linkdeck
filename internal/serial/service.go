@@ -21,6 +21,9 @@ type OpenRequest struct {
 	StopBits      StopBits     `json:"stopBits"`
 	ReadTimeoutMs int          `json:"readTimeoutMs"`
 	Framing       framing.Spec `json:"framing"`
+	// Stream enables the shared UI capture loop. Script-owned channels leave
+	// this false so their Recv pump owns the transport exclusively.
+	Stream bool `json:"stream"`
 }
 
 // SerialService exposes the serial transport to the frontend via mygo.Bind.
@@ -32,9 +35,9 @@ type SerialService struct {
 	stream *stream.Manager
 }
 
-// AttachStream connects the RX stream manager (ticket #11). When attached,
-// Open starts a per-port read loop and Close stops it. A nil manager
-// detaches. NOT bound in main.go; the integrator owns binding.
+// AttachStream connects the RX stream manager. When attached, Open with
+// Stream=true starts a per-port read loop and Close stops it. A nil manager
+// detaches.
 func (s *SerialService) AttachStream(m *stream.Manager) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -95,7 +98,7 @@ func (s *SerialService) Open(req OpenRequest) (PortInfo, error) {
 		return PortInfo{}, err
 	}
 	mgr := s.stream
-	if mgr != nil {
+	if mgr != nil && req.Stream {
 		if serr := mgr.Start(req.Port, portSource{port: p}, framer); serr != nil {
 			_ = p.Close()
 			return PortInfo{}, serr

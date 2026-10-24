@@ -147,6 +147,7 @@ function openRequest(port: string, config: SerialChannelConfig): OpenRequest {
     stopBits: config.stopBits,
     readTimeoutMs: config.readTimeoutMs,
     framing: config.framing,
+    stream: true,
   };
 }
 
@@ -285,6 +286,7 @@ async function openConfiguredChannel(
     heartbeatMs: config.heartbeatMs,
     heartbeatPayload: heartbeatBase64(config.heartbeatPayload),
     framing: config.framing,
+    stream: true,
   });
   return {
     name: config.address,

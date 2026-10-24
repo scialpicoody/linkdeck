@@ -12,10 +12,7 @@ export interface ScriptEditorProps {
    * selects the line; runtime errors carry line numbers per spec #9.
    */
   errorLine?: number | null;
-  /**
-   * Error-line jump stub: fired when the editor performs a jump, so the
-   * layout can keep output linkage in sync. No static lint in v1.
-   */
+  /** Fired after an error-line jump so the layout can keep linkage in sync. */
   onErrorLine?: (line: number) => void;
   readOnly?: boolean;
 }
@@ -126,7 +123,7 @@ export default function ScriptEditor({
     if (model && model.getValue() !== value) model.setValue(value);
   }, [value]);
 
-  // Error-line jump: reveal + select the line, then notify the stub.
+  // Error-line jump: reveal, select the line, and notify the layout.
   useEffect(() => {
     if (errorLine == null || state !== "ready") return;
     const editor = editorRef.current;

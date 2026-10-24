@@ -4,8 +4,8 @@
 // surface: a serialized single-LState engine, a matcher pool for
 // send_expect/expect, and the locked ticket #4 scripting API
 // (serial/tcp tables, top-level send_expect/expect, log/hex/json helpers).
-// Real serial/TCP transports plug in later through the Transport interface;
-// this package ships no hardware access itself.
+// Real transports arrive through the Transport interface and the link
+// adapters; this package owns no driver dependency.
 //
 // Execution model. One Engine owns one *lua.LState and every use of it is
 // serialized by a mutex, so concurrent Go callers queue instead of racing.
@@ -19,7 +19,7 @@
 // Go callback mid-call. In practice that means: expect/send_expect/recv
 // loops poll the transport in short slices (<=50ms) and abort between
 // slices when the run's context expires, so they die with the run; other
-// blocking host calls (open/accept/send, future real-transport I/O) are NOT
+// blocking host calls (open/accept/send) are NOT
 // preempted mid-call — keep them short or context-aware. See lua-runtime
 // research (docs/research/lua-runtime.md).
 //

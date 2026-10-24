@@ -4,7 +4,7 @@ package script
 //
 // Serial callers fill BaudRate/Framing; TCP callers pass host in target
 // with the port in Extra["port"]. Anything the table holds beyond the
-// known fields lands in Extra as strings for future transports.
+// known fields lands in Extra as strings for transport-specific options.
 type OpenOptions struct {
 	BaudRate  int
 	TimeoutMs int

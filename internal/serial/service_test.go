@@ -95,6 +95,7 @@ func TestServiceOpenUsesFraming(t *testing.T) {
 		StopBits:      StopOne,
 		ReadTimeoutMs: 200,
 		Framing:       framing.Spec{Kind: "delimiter", DelimiterHex: "0D0A"},
+		Stream:        true,
 	})
 	require.NoError(t, err)
 	defer func() { _ = svc.Close(slave.Name()) }()

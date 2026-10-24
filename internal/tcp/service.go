@@ -10,8 +10,8 @@ import (
 	"linkdeck/internal/stream"
 )
 
-// OpenRequest asks the service to dial a TCP client. JSON-friendly for a
-// future mygo.Bind (NOT bound in main.go; the integrator owns binding).
+// OpenRequest asks the service to dial a TCP client. It is JSON-friendly for
+// mygo bindings.
 //
 // MaxRetries caps reconnect attempts after the initial dial: 0 (default)
 // retries forever and negative disables reconnect. BaseBackoffMs/MaxBackoffMs tune the capped exponential
@@ -28,6 +28,9 @@ type OpenRequest struct {
 	HeartbeatMs      int          `json:"heartbeatMs"`
 	HeartbeatPayload []byte       `json:"heartbeatPayload"`
 	Framing          framing.Spec `json:"framing"`
+	// Stream enables the shared UI capture loop. Script-owned clients leave
+	// this false so their Recv pump owns the connection exclusively.
+	Stream bool `json:"stream"`
 }
 
 // ConnInfo describes one client channel.
@@ -69,7 +72,6 @@ type ChannelInfo struct {
 // TcpService owns dial clients and listen servers by name, mirroring the
 // SerialService shape (list/open/close/send/recv/status) plus
 // listen/accept for servers. Every method is safe for concurrent calls.
-// It is deliberately NOT bound in main.go.
 type TcpService struct {
 	mu      sync.Mutex
 	clients map[string]*Client
@@ -80,7 +82,7 @@ type TcpService struct {
 // AttachStream connects the RX stream manager (ticket #11). When attached,
 // Open starts a per-client read loop, Close stops it, and every
 // successful reconnect Resets framer residue while keeping matchers. A nil
-// manager detaches and clears client hooks. NOT bound in main.go.
+// manager detaches and clears client hooks.
 func (s *TcpService) AttachStream(m *stream.Manager) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -167,7 +169,7 @@ func (s *TcpService) Open(req OpenRequest) (ConnInfo, error) {
 		return ConnInfo{}, fmt.Errorf("tcp: %s is already open", req.Name)
 	}
 	mgr := s.stream
-	if mgr != nil {
+	if mgr != nil && req.Stream {
 		c.SetReconnectHook(mgr.Resetter(req.Name))
 		if serr := mgr.Start(req.Name, clientSource{client: c}, framer); serr != nil {
 			s.mu.Unlock()

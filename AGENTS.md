@@ -44,7 +44,7 @@ Setup: `bun install`, then `go mod download`.
 | All frontend tests | `bun run test` (vitest) |
 | One frontend test file / case | `bunx vitest run src/lib/channels.test.ts` / `bunx vitest run -t "renders ASCII as lowercase hex pairs"` |
 
-`bun run build` is required to produce a shippable app; plain `go build` does not run the frontend build or embed it. Pre-commit (lefthook) runs biome on staged frontend files, `tsc --noEmit`, and `gofmt -l`; CI runs `bun install --frozen-lockfile`, `check`, `typecheck`, `build:web`, and `go test ./...`.
+`bun run build` is required to produce a shippable app; plain `go build` does not run the frontend build or embed it. Pre-commit (lefthook) runs biome on staged frontend files, `tsc --noEmit`, and `gofmt -l`; CI runs `bun install --frozen-lockfile`, `check`, `typecheck`, frontend tests, `knip`, `build:web`, and `go test ./...`.
 
 `src/mygo.ts` is generated — never edit it by hand. Run `bun run generate` after changing any Go type or method reachable through `mygo.Bind` or any `mygo.NewEvent` payload. Biome and knip intentionally ignore it.
 
@@ -75,6 +75,7 @@ Per channel: transport bytes → `framing.Framer` (half/sticky/oversize/checksum
 
 - **Matcher-first:** a frame matching a pending expectation wakes only the waiting script; it never reaches the UI.
 - **Backpressure:** the outbound queue holds 256 batches; when full the oldest batch is dropped and a per-channel `Dropped` counter increments. The read loop never blocks, so floods cannot wedge close/reconnect.
+- **Capture ownership:** UI-owned serial/TCP opens set `Stream: true` and own the shared Manager loop. Script-owned opens leave it false and keep an exclusive Recv pump; the two paths must never read the same transport concurrently.
 - **Lifetime:** one read goroutine per open channel. Stop order is always *close the transport first* (unblocks an in-flight `Read`), then `Manager.Stop`. Reconnect calls `Reset` to discard half-frame residue but deliberately keeps pending matchers.
 - **Wire shape:** `Frame` is bytes in Go; across bindings it becomes `FrameDTO{channel, dir, payload(base64), tsMillis}`.
 
@@ -105,11 +106,11 @@ current frontend gaps live in `docs/design/workbench.md`. Read it before
 changing frontend information architecture or visual tokens. The visual
 direction is recorded in `docs/adr/0001-signal-bench-visual-language.md`.
 
-`src/lib/channels.ts` is the shared channel/tab contract consumed by sibling panels: treat it as additive-only and coordinate before renaming. Today the sidebar polls `SerialService.list()` every 3 s; counters are fed by transport/stream integration.
+`src/lib/channels.ts` is the shared channel/tab contract consumed by sibling panels: treat it as additive-only and coordinate before renaming. It covers serial, TCP client, TCP server, and accepted TCP connections. `useChannels` polls both transports every 3 s as a fallback; the host publishes batched `channel-status` snapshots every 500 ms.
 
 ### mygo wiring
 
-`main.go` binds services, then in `mygo.App.WhenReady` creates the window (`StateKey: "main"`), starts a `stream.Manager` whose `Emit` pushes the `frames` event, and attaches that manager to the serial/TCP services. `mygo.config.ts` is the build contract: `devUrl` must match Vite's strict port 5173, `buildCommand` produces `dist/`, bindings land in `src/mygo.ts`, and packaged output goes to `build/`. When mygo API behavior is in question, read the pinned source: `go list -m -f '{{.Dir}}' github.com/egoist/mygo` (v0.6.3); upstream doc links are in [Agent skills](#agent-skills) above.
+`main.go` binds services, then in `mygo.App.WhenReady` creates the window (`StateKey: "main"`), starts a `stream.Manager` whose `Emit` pushes `frames`, attaches that manager to serial/TCP, wires `stream-errors`, `channel-status`, `script-output`, and `script-run-status`, and polls backend lifecycle every 500 ms. `mygo.config.ts` is the build contract: `devUrl` must match Vite's strict port 5173, `buildCommand` produces `dist/`, bindings land in `src/mygo.ts`, and packaged output goes to `build/`. When mygo API behavior is in question, read the pinned source: `go list -m -f '{{.Dir}}' github.com/egoist/mygo` (v0.6.3); upstream doc links are in [Agent skills](#agent-skills) above.
 
 ## Project conventions
 

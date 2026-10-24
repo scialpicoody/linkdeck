@@ -3,8 +3,8 @@ export type FramingKind = "delimiter" | "length-prefix" | "fixed-size" | "header
 
 /**
  * One complete message cut from a byte stream by a framing implementation.
- * Duck-typed locally so the inspector stays mock-prop driven and decoupled
- * from the future channel/frame store shape.
+ * Duck-typed locally so the inspector stays decoupled from the channel and
+ * frame-store shapes.
  */
 export interface InspectorFrame {
   id: string;

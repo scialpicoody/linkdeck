@@ -439,7 +439,7 @@ RESULT = d
 `, 5*time.Second)
 	}()
 	time.Sleep(100 * time.Millisecond)
-	// A host-side pump (future real transports) feeds from any goroutine.
+	// A host-side transport pump feeds from any goroutine.
 	if !e.Feed(NewRxFrame("g0", []byte("PING-1"))) {
 		t.Fatal("Feed should match the pending expect")
 	}

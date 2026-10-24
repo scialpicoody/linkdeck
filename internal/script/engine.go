@@ -177,7 +177,7 @@ func (e *Engine) ownsTarget(owner *lua.LState, target string) bool {
 	return false
 }
 
-// Pool exposes the matcher pool for host-driven pumps (future transports).
+// Pool exposes the matcher pool for host-driven transport pumps.
 // Feed is safe from any goroutine; the unmatched handler must not re-enter
 // Lua or the pool.
 func (e *Engine) Pool() *Pool { return e.pool }
@@ -1038,12 +1038,11 @@ func openOptions(tbl *lua.LTable) OpenOptions {
 }
 
 // ---------------------------------------------------------------------------
-// ScriptService: the mygo-bound facade (defined, NOT bound).
+// ScriptService: the mygo-bound facade.
 // ---------------------------------------------------------------------------
 
-// ScriptService wraps an Engine for host use. It is deliberately not
-// registered with mygo.Bind here: main.go stays integrator-owned. The
-// integrator binds this type once the surface settles.
+// ScriptService wraps an Engine for host use. main.go binds it once and
+// wires its output/status handlers to windows.
 type ScriptService struct {
 	eng *Engine
 	ws  *Workspace

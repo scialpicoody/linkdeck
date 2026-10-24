@@ -102,6 +102,11 @@ export interface OpenRequest {
   stopBits: StopBits;
   readTimeoutMs: number;
   framing: Spec;
+  /**
+   * Stream enables the shared UI capture loop. Script-owned channels leave
+   * this false so their Recv pump owns the transport exclusively.
+   */
+  stream: boolean;
 }
 
 export interface OutputRow {
@@ -197,11 +202,11 @@ export interface SystemInfo {
 }
 
 /**
- * OpenRequest asks the service to dial a TCP client. JSON-friendly for a
- * future mygo.Bind (NOT bound in main.go; the integrator owns binding).
+ * OpenRequest asks the service to dial a TCP client. It is JSON-friendly for
+ * mygo bindings.
  *
  * MaxRetries caps reconnect attempts after the initial dial: 0 (default)
- * retries forever. BaseBackoffMs/MaxBackoffMs tune the capped exponential
+ * retries forever and negative disables reconnect. BaseBackoffMs/MaxBackoffMs tune the capped exponential
  * backoff (defaults 100/5000); ConnectTimeoutMs bounds each dial (default
  * 5000). HeartbeatMs <= 0 (default) disables the heartbeat; otherwise the
  * client sends HeartbeatPayload (base64 over bindings) every HeartbeatMs.
@@ -216,6 +221,11 @@ export interface TcpOpenRequest {
   heartbeatMs: number;
   heartbeatPayload: string;
   framing: Spec;
+  /**
+   * Stream enables the shared UI capture loop. Script-owned clients leave
+   * this false so their Recv pump owns the connection exclusively.
+   */
+  stream: boolean;
 }
 
 export interface TransportStatus {
@@ -268,9 +278,9 @@ export const Greeter = {
  */
 export const SerialService = {
   /**
-   * AttachStream connects the RX stream manager (ticket #11). When attached,
-   * Open starts a per-port read loop and Close stops it. A nil manager
-   * detaches. NOT bound in main.go; the integrator owns binding.
+   * AttachStream connects the RX stream manager. When attached, Open with
+   * Stream=true starts a per-port read loop and Close stops it. A nil manager
+   * detaches.
    */
   attachStream(m: Manager | null): Promise<void> {
     return call("SerialService.AttachStream", m);
@@ -322,7 +332,6 @@ export const SerialService = {
  * TcpService owns dial clients and listen servers by name, mirroring the
  * SerialService shape (list/open/close/send/recv/status) plus
  * listen/accept for servers. Every method is safe for concurrent calls.
- * It is deliberately NOT bound in main.go.
  */
 export const TcpService = {
   /**
@@ -337,7 +346,7 @@ export const TcpService = {
    * AttachStream connects the RX stream manager (ticket #11). When attached,
    * Open starts a per-client read loop, Close stops it, and every
    * successful reconnect Resets framer residue while keeping matchers. A nil
-   * manager detaches and clears client hooks. NOT bound in main.go.
+   * manager detaches and clears client hooks.
    */
   attachStream(m: Manager | null): Promise<void> {
     return call("TcpService.AttachStream", m);

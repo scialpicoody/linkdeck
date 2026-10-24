@@ -5,11 +5,7 @@ import { ERROR_LINE_RE } from "./types";
 export interface ScriptOutputProps {
   /** JSON-lines shaped rows to render, oldest first. */
   rows: ScriptOutputRow[];
-  /**
-   * Error-line jump stub: fired with the 1-based line number when the user
-   * clicks an error row's line reference. The layout wires this to the
-   * editor; runtime errors carry line numbers per spec #9.
-   */
+  /** Fired with the 1-based line when the user clicks an error reference. */
   onErrorLine?: (line: number) => void;
 }
 

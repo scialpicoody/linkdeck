@@ -413,14 +413,16 @@ func (t *TCPTransport) Close(h Handle) error {
 	if p, ok := t.clients[h]; ok {
 		delete(t.clients, h)
 		t.mu.Unlock()
+		err := t.svc.Close(p.client)
 		p.stop()
-		return t.svc.Close(p.client)
+		return err
 	}
 	if p, ok := t.conns[h]; ok {
 		delete(t.conns, h)
 		t.mu.Unlock()
+		err := t.svc.ServerClose(p.server, p.conn)
 		p.stop()
-		return t.svc.ServerClose(p.server, p.conn)
+		return err
 	}
 	name, ok := t.servers[h]
 	if ok {
