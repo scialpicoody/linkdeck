@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"linkdeck/internal/framing"
+	"linkdeck/internal/stream"
 )
 
 // OpenRequest asks the service to dial a TCP client. JSON-friendly for a
@@ -62,6 +65,24 @@ type TcpService struct {
 	mu      sync.Mutex
 	clients map[string]*Client
 	servers map[string]*Server
+	stream  *stream.Manager
+}
+
+// AttachStream connects the RX stream manager (ticket #11). When attached,
+// Open starts a per-client read loop, Close stops it, and every
+// successful reconnect Resets framer residue while keeping matchers. A nil
+// manager detaches and clears client hooks. NOT bound in main.go.
+func (s *TcpService) AttachStream(m *stream.Manager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stream = m
+	for name, c := range s.clients {
+		if m != nil {
+			c.SetReconnectHook(m.Resetter(name))
+		} else {
+			c.SetReconnectHook(nil)
+		}
+	}
 }
 
 // NewTcpService returns an empty TcpService.
@@ -119,6 +140,19 @@ func (s *TcpService) Open(req OpenRequest) (ConnInfo, error) {
 		_ = c.Close()
 		return ConnInfo{}, fmt.Errorf("tcp: %s is already open", req.Name)
 	}
+	mgr := s.stream
+	if mgr != nil {
+		framer, ferr := framing.NewDelimiter(framing.DelimiterConfig{Delimiter: []byte("\n")})
+		if ferr == nil {
+			c.SetReconnectHook(mgr.Resetter(req.Name))
+			if serr := mgr.Start(req.Name, clientSource{client: c}, framer); serr != nil {
+				s.mu.Unlock()
+				c.SetReconnectHook(nil)
+				_ = c.Close()
+				return ConnInfo{}, serr
+			}
+		}
+	}
 	s.clients[req.Name] = c
 	s.mu.Unlock()
 	return ConnInfo{Name: req.Name, Address: req.Address, State: c.Status()}, nil
@@ -132,12 +166,27 @@ func (s *TcpService) Close(name string) error {
 	if ok {
 		delete(s.clients, name)
 	}
+	mgr := s.stream
 	s.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("tcp: %s is not open", name)
 	}
-	return c.Close()
+	c.SetReconnectHook(nil)
+	// Close the client first: it unblocks the read loop's in-flight Recv
+	// (Manager.Stop waits for the loop to exit and cannot interrupt a
+	// blocking Read itself).
+	err := c.Close()
+	if mgr != nil {
+		mgr.Stop(name)
+	}
+	return err
 }
+
+// clientSource adapts a dial Client to stream.Source.
+type clientSource struct{ client *Client }
+
+// Read implements stream.Source.
+func (cs clientSource) Read(maxLen int) ([]byte, error) { return cs.client.Recv(maxLen) }
 
 // Send writes data to the named client; fails fast while unconnected.
 func (s *TcpService) Send(name string, data []byte) (int, error) {
