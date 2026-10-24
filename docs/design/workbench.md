@@ -36,9 +36,10 @@ and Frame identity when introduced.
 
 ### Persistent operations
 
-Transmit and Inspect live in a right dock beside the stream on wide windows.
-On narrow windows they move below the stream rather than disappearing behind
-an unrelated navigation action.
+Transmit, Sequence, and Inspect live in a right dock beside the stream on wide
+windows. On narrow windows they move below the stream rather than disappearing
+behind an unrelated navigation action. Dock panels stay mounted when switching
+tabs so in-progress composer and Sequence drafts are not discarded.
 
 ### Dense, legible instrument UI
 
@@ -202,6 +203,18 @@ Editable source is `resources/icon.svg`; packaged output is
 - With no selection it shows a task-oriented empty state, not stale data.
 - It shares dock chrome with Transmit and never opens as a disconnected overlay.
 
+### Sequence
+
+- Runs native send/delay/expect programs against one serial or TCP Channel.
+- Supports repeat, interval, explicit continuous mode, boundary pause/resume,
+  and immediate cancel.
+- Validation happens before the first byte: bad HEX, invalid matchers, missing
+  transmit targets, empty programs, and unsafe continuous intervals fail early.
+- TX and matched RX appear in the run timeline and flow back into the active
+  Channel capture without duplicating ordinary unmatched stream frames.
+- Active and recent runs expose current step, TX/RX totals, latency, errors, and
+  a bounded event timeline scoped to the Channel.
+
 ### StatusBar
 
 - Shows channel kind/state, endpoint, baud when known, RX/TX counters,
@@ -295,6 +308,8 @@ to make an empty workbench look populated.
   `src/lib/frame-store.ts`, `src/lib/frame-stats.ts`, `src/lib/frame-identity.ts`,
   `src/lib/frame-view.ts`
 - Operations dock sizing: `src/lib/dock-layout.ts`, `src/style.css`
+- Send automation: `internal/automation/`, `internal/link/automation.go`,
+  `src/components/automation/`, `src/lib/automation-*.ts`
 - Script workspace: `src/components/scripts/`
 - Status bar: `src/components/layout/StatusBar.tsx`
 - Native window and icon: `main.go`, `resources/`

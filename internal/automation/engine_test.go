@@ -273,6 +273,29 @@ func TestEngineTimesOutExpectation(t *testing.T) {
 	}
 }
 
+func TestFailedSendEventRetainsTXPayload(t *testing.T) {
+	sender := &fakeSender{err: errors.New("port closed")}
+	log := &eventLog{}
+	engine := NewEngine(Options{Sender: sender, Emit: log.add})
+	defer engine.Close()
+	info, err := engine.Start(RunSpec{
+		Target: target("c1"),
+		Steps:  []Step{{Kind: StepSend, Payload: []byte("PING")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, engine, info.ID, StateFailed)
+	waitFor(t, "failed TX event", func() bool {
+		for _, event := range log.snapshot() {
+			if event.Kind == "step" && event.Phase == "failed" && event.Direction == "tx" {
+				return string(event.Payload) == "PING" && event.Message == "port closed"
+			}
+		}
+		return false
+	})
+}
+
 func TestEngineValidatesBeforeSideEffects(t *testing.T) {
 	sender := &fakeSender{}
 	engine := NewEngine(Options{Sender: sender})

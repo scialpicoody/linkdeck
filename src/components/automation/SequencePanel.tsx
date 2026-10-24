@@ -980,12 +980,6 @@ export function SequencePanelView({ channel, controller }: SequencePanelViewProp
  * capture callback.
  */
 export default function SequencePanel({ channel, onIoCapture }: SequencePanelProps) {
-  const controller = useAutomationController({
-    onIoCapture: (io) => {
-      // Runs can finish while the user switches Channels; only the panel's
-      // current backend target contributes local Frame capture.
-      if (channel !== null && io.channel === channel.backendKey) onIoCapture(io);
-    },
-  });
+  const controller = useAutomationController({ onIoCapture });
   return <SequencePanelView channel={channel} controller={controller} onIoCapture={onIoCapture} />;
 }

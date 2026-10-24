@@ -27,6 +27,7 @@ export interface UseCaptureSessions {
   clearFrames: (channelId: string) => void;
   resetCounters: (channelId: string) => void;
   remove: (channelIds: string[]) => void;
+  recordFrame: (channelId: string, frame: Frame) => void;
   recordSent: (channelId: string, frame: Frame) => void;
   recordFailedSend: (channelId: string, frame: Frame) => void;
 }
@@ -84,6 +85,15 @@ export function useCaptureSessions(
   const remove = useCallback((channelIds: string[]) => {
     setCaptures((previous) => removeCaptureSessions(previous, channelIds));
   }, []);
+  const recordFrame = useCallback((channelId: string, frame: Frame) => {
+    setCaptures((previous) =>
+      ingestCaptureBatch(
+        previous,
+        new Map([[channelId, { endpoint: "", frames: [frame] }]]),
+        activeIdRef.current,
+      ),
+    );
+  }, []);
   const recordSent = useCallback((channelId: string, frame: Frame) => {
     setCaptures((previous) => recordSentFrame(previous, channelId, frame));
   }, []);
@@ -98,6 +108,7 @@ export function useCaptureSessions(
     clearFrames,
     resetCounters,
     remove,
+    recordFrame,
     recordSent,
     recordFailedSend,
   };

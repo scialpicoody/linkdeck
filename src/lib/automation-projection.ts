@@ -38,7 +38,7 @@ export const EMPTY_AUTOMATION_PROJECTION: AutomationProjection = {
   nextEventSequence: 1,
 };
 
-function isAutomationRunActive(run: AutomationRunInfo | null | undefined): boolean {
+export function isAutomationRunActive(run: AutomationRunInfo | null | undefined): boolean {
   return run !== undefined && run !== null && ACTIVE_AUTOMATION_STATES.has(run.state);
 }
 

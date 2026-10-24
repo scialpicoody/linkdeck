@@ -59,13 +59,15 @@ internal/stream                 per-channel read loop, framer ownership, RX batc
         ▼
 internal/script                 Lua engine, matcher pool, opaque handles, Transport contract
         │
+internal/automation             native send/delay/expect runs; owns timing and cancellation
+        │
 internal/link                   adapters from serial/tcp services to script.Transport
         │
         ▼
 main.go                         binds services, wires the events, owns the window
 ```
 
-`internal/framing` and `internal/codec` are pure, standalone libraries. Framing is consumed by the transport/stream layers; codec owns byte↔value conversion (Hex/ASCII/JSON) for frame payloads and must stay free of framing and I/O concerns. `internal/link` is the only package besides `main` that imports both the drivers and `script`, which keeps the import graph acyclic. New transports plug in as a driver package plus an adapter in `link`; `script` must not learn about drivers.
+`internal/framing` and `internal/codec` are pure, standalone libraries. Framing is consumed by the transport/stream layers; codec owns byte↔value conversion (Hex/ASCII/JSON) for frame payloads and must stay free of framing and I/O concerns. `internal/automation` depends on the matcher contract and a small Sender interface, never on driver packages. `internal/link` is the only package besides `main` that imports the drivers plus `script` and `automation`, which keeps the import graph acyclic. New transports plug in as a driver package plus adapters in `link`; the script and automation engines must not learn about drivers.
 
 ### RX data path (central invariant)
 

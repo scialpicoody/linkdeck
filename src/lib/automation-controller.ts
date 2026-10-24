@@ -24,6 +24,7 @@ export interface AutomationIoCapture {
   payload: Uint8Array;
   tsMillis: number;
   latencyMs?: number;
+  error?: string;
 }
 
 export interface UseAutomationControllerOptions {
@@ -119,16 +120,23 @@ export function useAutomationController({
           return current;
         });
       }
-      if (event.kind === "io" && (event.direction === "tx" || event.direction === "rx")) {
+      const ioEvent = event.kind === "io" && (event.direction === "tx" || event.direction === "rx");
+      const failedSend =
+        event.kind === "step" &&
+        event.phase === "failed" &&
+        event.action === "send" &&
+        event.direction === "tx";
+      if (ioEvent || failedSend) {
         ioCaptureRef.current({
           runId: event.run.id,
           channel: event.run.channel,
-          direction: event.direction,
+          direction: event.direction === "rx" ? "rx" : "tx",
           phase: event.phase ?? (event.direction === "tx" ? "sent" : "matched"),
           stepId: event.stepId,
           payload: decodeBase64(event.payload),
           tsMillis: event.tsMillis,
           latencyMs: event.latencyMs,
+          error: failedSend ? event.message : undefined,
         });
       }
     });

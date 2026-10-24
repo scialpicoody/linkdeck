@@ -6,6 +6,7 @@ import {
   Save,
   ScanSearch,
   SendHorizontal,
+  Workflow,
   X,
 } from "lucide-react";
 import {
@@ -19,6 +20,7 @@ import {
   useState,
 } from "react";
 import { Toaster, toast } from "sonner";
+import { SequencePanelView } from "./components/automation";
 import type { ChannelFormValue } from "./components/channels";
 import {
   ChannelDialog,
@@ -47,6 +49,8 @@ import {
   ScriptRunControls,
 } from "./components/scripts";
 import { HintsProvider } from "./components/ui/Hint";
+import { type AutomationIoCapture, useAutomationController } from "./lib/automation-controller";
+import { isAutomationRunActive } from "./lib/automation-projection";
 import { EMPTY_CAPTURE_SESSION } from "./lib/capture-session";
 import {
   type Channel,
@@ -82,6 +86,7 @@ import {
 import { useCaptureSessions } from "./lib/use-capture-sessions";
 import { cn } from "./lib/utils";
 import {
+  AutomationAPI,
   ConfigAPI,
   events,
   type OutputRow as HostScriptOutputRow,
@@ -331,14 +336,33 @@ export default function App() {
     clearFrames,
     resetCounters,
     remove: removeCaptures,
+    recordFrame,
     recordSent,
     recordFailedSend,
   } = useCaptureSessions(channels, activeId);
+  const handleAutomationIo = useCallback(
+    (io: AutomationIoCapture) => {
+      const channel = channels.find((item) => item.backendKey === io.channel);
+      if (channel === undefined) return;
+      const frame = createFrame({
+        dir: io.direction === "tx" ? "out" : "in",
+        payload: io.payload,
+        ts: io.tsMillis,
+      });
+      if (io.error !== undefined) {
+        recordFailedSend(channel.id, { ...frame, error: io.error });
+      } else {
+        recordFrame(channel.id, frame);
+      }
+    },
+    [channels, recordFailedSend, recordFrame],
+  );
+  const automationController = useAutomationController({ onIoCapture: handleAutomationIo });
   const [statsClock, setStatsClock] = useState(() => Date.now());
   // Selected Frame → slide-over inspector (#20). Cleared on channel switch.
   const [frameSelection, setFrameSelection] = useState<Frame | null>(null);
   const [mainView, setMainView] = useState<MainView>("monitor");
-  const [dockTab, setDockTab] = useState<"send" | "inspect">("send");
+  const [dockTab, setDockTab] = useState<"send" | "sequence" | "inspect">("send");
   const [dockWidth, setDockWidth] = useState(() => {
     const viewport = typeof window === "undefined" ? 1280 : window.innerWidth;
     try {
@@ -813,6 +837,12 @@ export default function App() {
     [removeCaptures, removeChannel],
   );
 
+  const cancelAutomationFor = useCallback((items: Channel[]) => {
+    for (const item of items) {
+      void AutomationAPI.cancelChannel(item.backendKey).catch(() => {});
+    }
+  }, []);
+
   // Create adds a channel only after the backend accepts the connection.
   // Edit keeps the stable frontend id, opens a different backend before
   // closing the old one, and rolls back same-backend reopen failures.
@@ -845,6 +875,8 @@ export default function App() {
               )
               .map((channel) => channel.id)
           : [];
+      const acceptedChannels = channels.filter((channel) => ownedAcceptedIds.includes(channel.id));
+      cancelAutomationFor([existing, ...acceptedChannels]);
 
       const nextConfig = configFromForm(value);
       const nextBackendKey = nextConfig.transport === "serial" ? value.port.trim() : existing.id;
@@ -912,7 +944,15 @@ export default function App() {
       if (ownedAcceptedIds.length > 0) removeChannelArtifacts(ownedAcceptedIds);
       selectChannel(existing.id);
     },
-    [addChannel, channelDialog, channels, removeChannelArtifacts, selectChannel, updateChannel],
+    [
+      addChannel,
+      cancelAutomationFor,
+      channelDialog,
+      channels,
+      removeChannelArtifacts,
+      selectChannel,
+      updateChannel,
+    ],
   );
 
   const handleCloseChannel = useCallback(
@@ -930,6 +970,10 @@ export default function App() {
               )
               .map((candidate) => candidate.id)
           : [];
+      const acceptedChannels = channels.filter((candidate) =>
+        ownedAcceptedIds.includes(candidate.id),
+      );
+      cancelAutomationFor([channel, ...acceptedChannels]);
       try {
         await closeChannelTransport(channel);
       } catch (error) {
@@ -949,7 +993,7 @@ export default function App() {
         selectChannel((remainingAfterOwned[0] as Channel).id);
       }
     },
-    [activeId, channels, removeChannelArtifacts, selectChannel, updateChannel],
+    [activeId, cancelAutomationFor, channels, removeChannelArtifacts, selectChannel, updateChannel],
   );
 
   const handleReconnectChannel = useCallback(
@@ -967,6 +1011,10 @@ export default function App() {
               )
               .map((candidate) => candidate.id)
           : [];
+      const acceptedChannels = channels.filter((candidate) =>
+        ownedAcceptedIds.includes(candidate.id),
+      );
+      cancelAutomationFor([channel, ...acceptedChannels]);
 
       updateChannel(id, { state: "connecting", error: undefined, attempts: 0 });
       try {
@@ -991,7 +1039,7 @@ export default function App() {
         toast.error(`Reconnect ${channel.name} failed`, { description: messageOf(error) });
       }
     },
-    [channels, removeChannelArtifacts, selectChannel, updateChannel],
+    [cancelAutomationFor, channels, removeChannelArtifacts, selectChannel, updateChannel],
   );
 
   const handleSavePreset = useCallback(async (name: string, value: ChannelFormValue) => {
@@ -1044,6 +1092,9 @@ export default function App() {
   const activeFramingCount = activeFramingError
     ? activeFramingError.oversize + activeFramingError.checksum + activeFramingError.other
     : 0;
+  const automationActive = Object.values(automationController.projection.runs).some(
+    isAutomationRunActive,
+  );
   const dockLimits = dockBounds(typeof window === "undefined" ? 1280 : window.innerWidth);
 
   function startDockResize(event: ReactPointerEvent<HTMLDivElement>): void {
@@ -1171,6 +1222,24 @@ export default function App() {
                     <button
                       type="button"
                       role="tab"
+                      aria-selected={dockTab === "sequence"}
+                      onClick={() => setDockTab("sequence")}
+                      className={cn(
+                        "relative flex flex-1 items-center justify-center gap-1.5 border-r border-border font-mono text-[9px] tracking-wide uppercase",
+                        dockTab === "sequence"
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                      )}
+                    >
+                      <Workflow size={12} aria-hidden="true" />
+                      Sequence
+                      {automationActive && (
+                        <span className="size-1 rounded-full bg-primary" aria-hidden="true" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
                       aria-selected={dockTab === "inspect"}
                       onClick={() => setDockTab("inspect")}
                       className={cn(
@@ -1202,7 +1271,9 @@ export default function App() {
                     </button>
                   </div>
 
-                  {dockTab === "send" ? (
+                  <div
+                    className={cn("flex min-h-0 flex-1 flex-col", dockTab !== "send" && "hidden")}
+                  >
                     <Composer
                       channelName={active?.name ?? null}
                       canSend={active !== null && active.kind !== "tcp-server"}
@@ -1210,7 +1281,25 @@ export default function App() {
                       error={sendError}
                       onSend={(payload) => void handleSend(payload)}
                     />
-                  ) : (
+                  </div>
+                  <div
+                    className={cn(
+                      "flex min-h-0 flex-1 flex-col",
+                      dockTab !== "sequence" && "hidden",
+                    )}
+                  >
+                    <SequencePanelView
+                      channel={active}
+                      controller={automationController}
+                      onIoCapture={handleAutomationIo}
+                    />
+                  </div>
+                  <div
+                    className={cn(
+                      "flex min-h-0 flex-1 flex-col",
+                      dockTab !== "inspect" && "hidden",
+                    )}
+                  >
                     <FrameInspector
                       selection={
                         frameSelection !== null && active !== null
@@ -1235,7 +1324,7 @@ export default function App() {
                             }
                       }
                     />
-                  )}
+                  </div>
                 </aside>
               </div>
             ) : (

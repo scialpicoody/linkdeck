@@ -288,6 +288,7 @@ func (e *Engine) execute(ctx context.Context, id string, spec RunSpec) {
 					e.emitEvent(Event{
 						Run: info, Kind: "step", Phase: "failed", StepID: stepID,
 						Step: index + 1, Action: step.Kind, TsMillis: script.NowMillis(),
+						Direction: "tx", Payload: step.Payload,
 						LatencyMs: time.Since(started).Milliseconds(), Message: err.Error(),
 					})
 					if step.ContinueOnError {
