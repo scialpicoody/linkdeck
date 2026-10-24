@@ -26,11 +26,15 @@ const pollSliceMs = 50
 const handleMetatable = "LinkDeckHandle"
 
 // binding pairs a Lua-visible handle with its backend and backend handle.
+// owner is the minting LState: fresh-run, session, and main states all draw
+// from this one shared registry, and generation cleanup (session
+// reload/close, fresh-run teardown) closes one owner's handles.
 type binding struct {
 	backend       Transport
 	backendHandle Handle
 	target        string // human label: port path or host:port
 	table         string // owning Lua table: serial | tcp
+	owner         *lua.LState
 }
 
 // EngineOptions configures NewEngine. Transports are optional: Lua tables
@@ -47,7 +51,7 @@ type EngineOptions struct {
 // and the handle registry. Safe for concurrent use; Lua itself always runs
 // single-file. The zero value is unusable; build with NewEngine.
 type Engine struct {
-	execMu sync.Mutex // serializes every LState touch
+	execMu sync.Mutex // serializes every touch of the main LState
 	L      *lua.LState
 	pool   *Pool
 
@@ -58,9 +62,11 @@ type Engine struct {
 	handles map[Handle]*binding
 	seq     uint64
 
-	runMu     sync.Mutex
-	runCtx    context.Context
-	runCancel context.CancelFunc
+	exMu  sync.Mutex
+	execs map[*lua.LState]execReg
+
+	smu      sync.Mutex
+	sessions map[string]*Session
 
 	output func(string)
 	logger func(string)
@@ -93,12 +99,9 @@ func NewEngine(opts EngineOptions) *Engine {
 	e.pool.SetUnmatchedHandler(func(f Frame) {
 		e.output(fmt.Sprintf("%s %s %dB %x", f.Channel, f.Dir, len(f.Payload), f.Payload))
 	})
-	e.openSafeLibs()
-	e.installHandles()
-	e.installTransportTable("serial")
-	e.installTransportTable("tcp")
-	e.installExpect()
-	e.installHelpers()
+	e.execs = make(map[*lua.LState]execReg)
+	e.sessions = make(map[string]*Session)
+	e.installOnto(e.L)
 	return e
 }
 
@@ -161,45 +164,24 @@ func (e *Engine) Run(src string, timeout time.Duration) error {
 	}
 	e.execMu.Lock()
 	defer e.execMu.Unlock()
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	e.runMu.Lock()
-	e.runCtx, e.runCancel = ctx, cancel
-	e.runMu.Unlock()
-	defer func() {
-		e.runMu.Lock()
-		e.runCtx, e.runCancel = nil, nil
-		e.runMu.Unlock()
-	}()
-	e.L.SetContext(ctx)
-	defer e.L.RemoveContext()
+	ctx := e.beginExec(e.L, timeout)
+	defer e.endExec(e.L)
 	if err := e.L.DoString(src); err != nil {
-		runErr := &RunError{Message: err.Error(), Timeout: ctx.Err() != nil}
-		var apiErr *lua.ApiError
-		if errors.As(err, &apiErr) {
-			runErr.apiErr = apiErr
-			runErr.Message = apiErr.Object.String()
-			runErr.StackTrace = apiErr.StackTrace
-		}
-		return runErr
+		return runErrorOf(ctx, err)
 	}
 	return nil
 }
 
-// Close stops the timeout sweep, cancels an in-flight run, and closes the
-// Lua state. Open transports belong to the host and are left alone.
+// Close stops the timeout sweep, cancels every in-flight execution (runs,
+// file runs, session calls), closes all sessions, and closes the main Lua
+// state. Open transports belong to the host and are left alone.
 func (e *Engine) Close() {
 	e.closeOnce.Do(func() {
 		e.closed.Store(true)
 		e.pool.Close()
-		e.runMu.Lock()
-		cancel := e.runCancel
-		e.runMu.Unlock()
-		if cancel != nil {
-			cancel()
+		e.cancelAllExecs()
+		for _, s := range e.sessionsSnapshot() {
+			s.Close()
 		}
 		e.execMu.Lock()
 		defer e.execMu.Unlock()
@@ -207,18 +189,21 @@ func (e *Engine) Close() {
 	})
 }
 
-// runExpired reports whether the in-flight run (if any) timed out.
-func (e *Engine) runExpired() bool {
-	e.runMu.Lock()
-	defer e.runMu.Unlock()
-	return e.runCtx != nil && e.runCtx.Err() != nil
-}
-
 // ---------------------------------------------------------------------------
 // Lua installation
 // ---------------------------------------------------------------------------
 
-func (e *Engine) openSafeLibs() {
+func (e *Engine) installOnto(L *lua.LState) {
+	e.openSafeLibs(L)
+	e.installHandles(L)
+	e.installTransportTable(L, "serial")
+	e.installTransportTable(L, "tcp")
+	e.installExpect(L)
+	e.installHelpers(L)
+	e.installScript(L)
+}
+
+func (e *Engine) openSafeLibs(L *lua.LState) {
 	for _, pair := range []struct {
 		name string
 		open func(*lua.LState) int
@@ -229,8 +214,8 @@ func (e *Engine) openSafeLibs() {
 		{lua.MathLibName, lua.OpenMath},
 		{lua.CoroutineLibName, lua.OpenCoroutine},
 	} {
-		if err := e.L.CallByParam(lua.P{
-			Fn:      e.L.NewFunction(pair.open),
+		if err := L.CallByParam(lua.P{
+			Fn:      L.NewFunction(pair.open),
 			NRet:    0,
 			Protect: true,
 		}, lua.LString(pair.name)); err != nil {
@@ -241,14 +226,14 @@ func (e *Engine) openSafeLibs() {
 	// the chunks the host feeds them (load() of in-memory strings is fine).
 	// io, os, debug and package/require are never opened.
 	for _, name := range []string{"dofile", "loadfile"} {
-		e.L.SetGlobal(name, lua.LNil)
+		L.SetGlobal(name, lua.LNil)
 	}
-	e.L.SetGlobal("print", e.L.NewFunction(e.luaLog))
+	L.SetGlobal("print", L.NewFunction(e.luaLog))
 }
 
-func (e *Engine) installHandles() {
-	mt := e.L.NewTypeMetatable(handleMetatable)
-	mt.RawSetString("__gc", e.L.NewFunction(func(L *lua.LState) int {
+func (e *Engine) installHandles(L *lua.LState) {
+	mt := L.NewTypeMetatable(handleMetatable)
+	mt.RawSetString("__gc", L.NewFunction(func(L *lua.LState) int {
 		ud, ok := L.Get(1).(*lua.LUserData)
 		if !ok {
 			return 0
@@ -258,7 +243,7 @@ func (e *Engine) installHandles() {
 		}
 		return 0
 	}))
-	mt.RawSetString("__tostring", e.L.NewFunction(func(L *lua.LState) int {
+	mt.RawSetString("__tostring", L.NewFunction(func(L *lua.LState) int {
 		if ud, ok := L.Get(1).(*lua.LUserData); ok {
 			if id, ok := ud.Value.(string); ok {
 				L.Push(lua.LString("handle(" + id + ")"))
@@ -284,9 +269,8 @@ func (e *Engine) backendFor(table string) Transport {
 	return e.tcp
 }
 
-func (e *Engine) installTransportTable(name string) {
-	tbl := e.L.NewTable()
-	L := e.L
+func (e *Engine) installTransportTable(L *lua.LState, name string) {
+	tbl := L.NewTable()
 	open := e.luaOpen(name)
 	if name == "tcp" {
 		open = e.luaTcpOpen // locked sketch: tcp.open(host, port, opts?)
@@ -325,7 +309,7 @@ func (e *Engine) luaOpen(table string) lua.LGFunction {
 			L.Push(lua.LString(err.Error()))
 			return 2
 		}
-		id := e.bind(table, backend, h, target)
+		id := e.bind(L, table, backend, h, target)
 		e.pushHandle(L, id)
 		L.Push(lua.LNil)
 		return 2
@@ -355,7 +339,7 @@ func (e *Engine) luaTcpOpen(L *lua.LState) int {
 		L.Push(lua.LString(err.Error()))
 		return 2
 	}
-	id := e.bind("tcp", backend, h, net.JoinHostPort(host, strconv.Itoa(port)))
+	id := e.bind(L, "tcp", backend, h, net.JoinHostPort(host, strconv.Itoa(port)))
 	e.pushHandle(L, id)
 	L.Push(lua.LNil)
 	return 2
@@ -402,7 +386,7 @@ func (e *Engine) luaRecv(L *lua.LState) int {
 		L.ArgError(2, "timeout_ms must be >= 0")
 		return 0
 	}
-	data, err := e.recvWait(b, timeoutMs)
+	data, err := e.recvWait(e.ctxFor(L), b, timeoutMs)
 	if err != nil {
 		L.Push(lua.LNil)
 		L.Push(lua.LString(expectErrString(err)))
@@ -434,7 +418,7 @@ func (e *Engine) luaListen(L *lua.LState) int {
 		L.Push(lua.LString(err.Error()))
 		return 2
 	}
-	id := e.bind("tcp", backend, h, "listen:"+strconv.Itoa(port))
+	id := e.bind(L, "tcp", backend, h, "listen:"+strconv.Itoa(port))
 	e.pushHandle(L, id)
 	L.Push(lua.LNil)
 	return 2
@@ -458,13 +442,13 @@ func (e *Engine) luaAccept(L *lua.LState) int {
 		L.ArgError(2, "timeout_ms must be >= 0")
 		return 0
 	}
-	h, target, err := e.acceptWait(lt, b, timeoutMs)
+	h, target, err := e.acceptWait(e.ctxFor(L), lt, b, timeoutMs)
 	if err != nil {
 		L.Push(lua.LNil)
 		L.Push(lua.LString(expectErrString(err)))
 		return 2
 	}
-	id := e.bind("tcp", b.backend, h, target)
+	id := e.bind(L, "tcp", b.backend, h, target)
 	e.pushHandle(L, id)
 	L.Push(lua.LNil)
 	return 2
@@ -474,9 +458,9 @@ func (e *Engine) luaAccept(L *lua.LState) int {
 // Lua callbacks: expect/send_expect
 // ---------------------------------------------------------------------------
 
-func (e *Engine) installExpect() {
-	e.L.SetGlobal("send_expect", e.L.NewFunction(e.luaSendExpect))
-	e.L.SetGlobal("expect", e.L.NewFunction(e.luaExpect))
+func (e *Engine) installExpect(L *lua.LState) {
+	L.SetGlobal("send_expect", L.NewFunction(e.luaSendExpect))
+	L.SetGlobal("expect", L.NewFunction(e.luaExpect))
 }
 
 func (e *Engine) luaSendExpect(L *lua.LState) int {
@@ -534,7 +518,7 @@ func (e *Engine) doExpect(L *lua.LState, b *binding, pattern string, mode MatchM
 		L.Push(lua.LString(err.Error()))
 		return
 	}
-	frame, err := e.awaitFrame(b, reg)
+	frame, err := e.awaitFrame(e.ctxFor(L), b, reg)
 	if err != nil {
 		L.Push(lua.LNil)
 		L.Push(lua.LString(expectErrString(err)))
@@ -552,16 +536,17 @@ func expectErrString(err error) string {
 }
 
 // awaitFrame pumps the channel into the pool until reg resolves, its
-// deadline passes, or the run dies. Receiving is sliced so run timeouts
-// preempt the wait; each slice honors the backend Recv contract.
-func (e *Engine) awaitFrame(b *binding, reg *Registration) (Frame, error) {
+// deadline passes, or the owning execution dies. Receiving is sliced so
+// run/call timeouts preempt the wait; each slice honors the backend Recv
+// contract.
+func (e *Engine) awaitFrame(ctx context.Context, b *binding, reg *Registration) (Frame, error) {
 	for {
 		select {
 		case f := <-reg.ch:
 			return f, nil
 		default:
 		}
-		if e.runExpired() {
+		if expired(ctx) {
 			e.pool.Cancel(reg)
 			return Frame{}, context.DeadlineExceeded
 		}
@@ -594,13 +579,14 @@ func (e *Engine) awaitFrame(b *binding, reg *Registration) (Frame, error) {
 	}
 }
 
-// recvWait reads the next chunk with an overall timeout, sliced for run
-// preemption. Raw recv bypasses the matcher pool by design: mix it with
-// expect on one channel and frames will go where you did not want them.
-func (e *Engine) recvWait(b *binding, timeoutMs int) ([]byte, error) {
+// recvWait reads the next chunk with an overall timeout, sliced for
+// run/call preemption. Raw recv bypasses the matcher pool by design: mix
+// it with expect on one channel and frames will go where you did not want
+// them.
+func (e *Engine) recvWait(ctx context.Context, b *binding, timeoutMs int) ([]byte, error) {
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 	for {
-		if e.runExpired() {
+		if expired(ctx) {
 			return nil, context.DeadlineExceeded
 		}
 		if timeoutMs >= 0 && !time.Now().Before(deadline) {
@@ -632,10 +618,10 @@ func (e *Engine) recvWait(b *binding, timeoutMs int) ([]byte, error) {
 }
 
 // acceptWait polls Accept in slices like recvWait.
-func (e *Engine) acceptWait(lt ListenerTransport, b *binding, timeoutMs int) (Handle, string, error) {
+func (e *Engine) acceptWait(ctx context.Context, lt ListenerTransport, b *binding, timeoutMs int) (Handle, string, error) {
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 	for {
-		if e.runExpired() {
+		if expired(ctx) {
 			return "", "", context.DeadlineExceeded
 		}
 		if !time.Now().Before(deadline) {
@@ -663,8 +649,7 @@ func (e *Engine) acceptWait(lt ListenerTransport, b *binding, timeoutMs int) (Ha
 // Lua callbacks: log/hex/json helpers
 // ---------------------------------------------------------------------------
 
-func (e *Engine) installHelpers() {
-	L := e.L
+func (e *Engine) installHelpers(L *lua.LState) {
 	L.SetGlobal("log", L.NewFunction(e.luaLog))
 
 	hexTbl := L.NewTable()
@@ -837,12 +822,12 @@ func jsonToLua(L *lua.LState, v any) lua.LValue {
 // handles + options
 // ---------------------------------------------------------------------------
 
-func (e *Engine) bind(table string, backend Transport, bh Handle, target string) Handle {
+func (e *Engine) bind(owner *lua.LState, table string, backend Transport, bh Handle, target string) Handle {
 	e.hmu.Lock()
 	defer e.hmu.Unlock()
 	e.seq++
 	id := Handle(fmt.Sprintf("%s:%d", table, e.seq))
-	e.handles[id] = &binding{backend: backend, backendHandle: bh, target: target, table: table}
+	e.handles[id] = &binding{backend: backend, backendHandle: bh, target: target, table: table, owner: owner}
 	return id
 }
 
@@ -954,13 +939,12 @@ func openOptions(tbl *lua.LTable) OpenOptions {
 }
 
 // ---------------------------------------------------------------------------
-// ScriptService: the future mygo-bound facade (defined, NOT bound).
+// ScriptService: the mygo-bound facade (defined, NOT bound).
 // ---------------------------------------------------------------------------
 
 // ScriptService wraps an Engine for host use. It is deliberately not
-// registered with mygo.Bind here: main.go stays integrator-owned, and the
-// real transports are not built yet. The integrator binds this type once
-// the surface settles.
+// registered with mygo.Bind here: main.go stays integrator-owned. The
+// integrator binds this type once the surface settles.
 type ScriptService struct {
 	eng *Engine
 }
@@ -975,6 +959,19 @@ func NewScriptService(eng *Engine) *ScriptService {
 // the engine's configured sinks.
 func (s *ScriptService) Run(src string, timeoutMs int) error {
 	return s.eng.Run(src, time.Duration(timeoutMs)*time.Millisecond)
+}
+
+// RunFile executes the script file at path on a fresh Lua state with
+// timeoutMs (<=0 selects the engine default). The state is destroyed after
+// the run: globals do not leak between runs.
+func (s *ScriptService) RunFile(path string, timeoutMs int) error {
+	return s.eng.RunFile(path, time.Duration(timeoutMs)*time.Millisecond)
+}
+
+// Load returns the session bound to path, creating and executing it on
+// first use. See Engine.Load for the registry and reload contract.
+func (s *ScriptService) Load(path string) (*Session, error) {
+	return s.eng.Load(path)
 }
 
 // Feed offers an externally received frame to the script matchers.
