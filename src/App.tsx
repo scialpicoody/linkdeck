@@ -1,5 +1,23 @@
-import { AlertTriangle, Code2, FilePlus2, Save, ScanSearch, SendHorizontal, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  Code2,
+  FilePlus2,
+  RotateCcw,
+  Save,
+  ScanSearch,
+  SendHorizontal,
+  X,
+} from "lucide-react";
+import {
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Toaster, toast } from "sonner";
 import type { ChannelFormValue } from "./components/channels";
 import {
@@ -38,6 +56,15 @@ import {
   type SerialChannelConfig,
   useChannels,
 } from "./lib/channels";
+import {
+  clampDockWidth,
+  DOCK_DEFAULT_WIDTH,
+  DOCK_STORAGE_KEY,
+  dockBounds,
+  parseStoredDockWidth,
+  widthFromKey,
+  widthFromPointer,
+} from "./lib/dock-layout";
 import { decodeFrameBatch } from "./lib/frame-ingest";
 import {
   type ChannelStats,
@@ -319,6 +346,15 @@ export default function App() {
   );
   const [mainView, setMainView] = useState<MainView>("monitor");
   const [dockTab, setDockTab] = useState<"send" | "inspect">("send");
+  const [dockWidth, setDockWidth] = useState(() => {
+    const viewport = typeof window === "undefined" ? 1280 : window.innerWidth;
+    try {
+      return parseStoredDockWidth(localStorage.getItem(DOCK_STORAGE_KEY), viewport);
+    } catch {
+      return parseStoredDockWidth(null, viewport);
+    }
+  });
+  const dockDrag = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
   // Scripts view: real workspace files, persisted favorites, and per-file
   // editor tabs. Revisions detect external edits before a save overwrites.
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
@@ -348,6 +384,26 @@ export default function App() {
   useEffect(() => {
     const timer = window.setInterval(() => setStatsClock(Date.now()), 1000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DOCK_STORAGE_KEY, String(dockWidth));
+    } catch {
+      // Persistence is best-effort in restricted webviews.
+    }
+  }, [dockWidth]);
+
+  useEffect(() => {
+    function onResize() {
+      setDockWidth((current) => clampDockWidth(current, window.innerWidth));
+    }
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
   }, []);
 
   // Load named presets once (browser-only mode: none).
@@ -1049,6 +1105,45 @@ export default function App() {
   const activeFramingCount = activeFramingError
     ? activeFramingError.oversize + activeFramingError.checksum + activeFramingError.other
     : 0;
+  const dockLimits = dockBounds(typeof window === "undefined" ? 1280 : window.innerWidth);
+
+  function startDockResize(event: ReactPointerEvent<HTMLDivElement>): void {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.currentTarget.focus();
+    dockDrag.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: dockWidth,
+    };
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+  }
+
+  function moveDockResize(event: ReactPointerEvent<HTMLDivElement>): void {
+    const drag = dockDrag.current;
+    if (drag === null || drag.pointerId !== event.pointerId) return;
+    setDockWidth(widthFromPointer(drag.startWidth, drag.startX, event.clientX, window.innerWidth));
+  }
+
+  function endDockResize(event: ReactPointerEvent<HTMLDivElement>): void {
+    const drag = dockDrag.current;
+    if (drag === null || drag.pointerId !== event.pointerId) return;
+    dockDrag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
+  }
+
+  function keyDockResize(event: ReactKeyboardEvent<HTMLDivElement>): void {
+    const next = widthFromKey(dockWidth, event.key, window.innerWidth);
+    if (next === null) return;
+    event.preventDefault();
+    setDockWidth(next);
+  }
 
   return (
     <HintsProvider>
@@ -1091,8 +1186,28 @@ export default function App() {
 
                 <aside
                   aria-label="Channel operations"
-                  className="flex h-[42%] min-h-0 w-full shrink-0 flex-col border-t border-border bg-card xl:h-auto xl:w-80 xl:border-t-0 xl:border-l"
+                  className="operations-dock relative flex min-h-0 shrink-0 flex-col border-t border-border bg-card xl:border-t-0 xl:border-l"
+                  style={{ "--dock-width": `${dockWidth}px` } as CSSProperties}
                 >
+                  <hr
+                    aria-label="Resize operations dock"
+                    aria-orientation="vertical"
+                    aria-valuemin={dockLimits.min}
+                    aria-valuemax={dockLimits.max}
+                    aria-valuenow={dockWidth}
+                    aria-valuetext={`${dockWidth} pixels`}
+                    tabIndex={0}
+                    onPointerDown={startDockResize}
+                    onPointerMove={moveDockResize}
+                    onPointerUp={endDockResize}
+                    onPointerCancel={endDockResize}
+                    onKeyDown={keyDockResize}
+                    className="absolute top-0 -left-1 z-20 hidden h-full w-2 cursor-col-resize touch-none border-0 bg-transparent focus-visible:bg-primary/35 focus-visible:outline focus-visible:outline-primary xl:block"
+                  />
+                  <span
+                    className="pointer-events-none absolute inset-y-0 -left-px z-10 hidden w-px bg-border-strong/65 xl:block"
+                    aria-hidden="true"
+                  />
                   <div
                     role="tablist"
                     aria-label="Operations"
@@ -1130,6 +1245,20 @@ export default function App() {
                       {frameSelection !== null && (
                         <span className="size-1 rounded-full bg-primary" aria-hidden="true" />
                       )}
+                    </button>
+                    <span className="hidden items-center px-1.5 font-mono text-[8px] text-muted-foreground xl:flex">
+                      {dockWidth}px
+                    </span>
+                    <button
+                      type="button"
+                      title="Reset dock width"
+                      onClick={() =>
+                        setDockWidth(clampDockWidth(DOCK_DEFAULT_WIDTH, window.innerWidth))
+                      }
+                      aria-label="Reset operations dock width"
+                      className="hidden size-7 shrink-0 place-items-center text-muted-foreground hover:bg-muted hover:text-foreground xl:grid"
+                    >
+                      <RotateCcw size={11} aria-hidden="true" />
                     </button>
                   </div>
 

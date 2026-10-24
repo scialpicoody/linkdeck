@@ -197,3 +197,20 @@ button:disabled {
   font-size: 0.6875rem;
   letter-spacing: 0.02em;
 }
+
+/*
+ * The operations dock is stacked below the frame stream until xl. Above
+ * that breakpoint its width is the persisted pointer/keyboard value while
+ * the frame table keeps the flexible remainder.
+ */
+.operations-dock {
+  height: clamp(10rem, 42%, 55%);
+  width: 100%;
+}
+
+@media (min-width: 80rem) {
+  .operations-dock {
+    height: auto;
+    width: var(--dock-width, 20rem);
+  }
+}
