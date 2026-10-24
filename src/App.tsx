@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react
 import { Toaster, toast } from "sonner";
 import type { ChannelFormValue } from "./components/channels";
 import { ChannelDialog } from "./components/channels";
-import { type Frame, FramePanel } from "./components/frames";
+import { type Frame, FramePanel, type SendPayload, toWireString } from "./components/frames";
 import { Sidebar } from "./components/layout/Sidebar";
 import { StatusBar } from "./components/layout/StatusBar";
 import { TabStrip } from "./components/layout/TabStrip";
@@ -110,31 +110,43 @@ export default function App() {
     }
   }, [listError]);
 
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+
   const handleSend = useCallback(
-    async (data: string) => {
+    async (payload: SendPayload) => {
       if (active === null || active.kind !== "serial") return;
       const id = active.id;
       const portName = active.name;
+      const { wire, error } = toWireString(payload);
+      if (error !== null) {
+        setSendError(error);
+        return;
+      }
+      setSending(true);
+      setSendError(null);
       try {
-        await SerialService.send(portName, data);
+        await SerialService.send(portName, wire);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
-        setOutputRows((rows) => [
-          ...rows,
-          {
-            type: "error",
-            channel: portName,
-            direction: "out",
-            data: message,
-            ts: Date.now(),
-          },
-        ]);
+        // TX failure: red row in the frame table (not the script output) +
+        // inline composer error + toast. No dependency on Output visibility.
+        setFramesByChannel((prev) => ({
+          ...prev,
+          [id]: [
+            ...(prev[id] ?? []),
+            { dir: "out", data: `⚠ send failed: ${message}`, ts: Date.now() },
+          ],
+        }));
+        setSendError(message);
         toast.error(`Send to ${portName} failed`, { description: message });
         return;
+      } finally {
+        setSending(false);
       }
       setFramesByChannel((prev) => ({
         ...prev,
-        [id]: [...(prev[id] ?? []), { dir: "out", data, ts: Date.now() }],
+        [id]: [...(prev[id] ?? []), { dir: "out", data: wire, ts: Date.now() }],
       }));
     },
     [active],
@@ -244,6 +256,8 @@ export default function App() {
                     onSend={handleSend}
                     onClear={handleClear}
                     canSend={active !== null && active.kind === "serial"}
+                    sending={sending}
+                    sendError={sendError}
                   />
                 </div>
                 <div className="flex h-64 shrink-0 border-t border-border">

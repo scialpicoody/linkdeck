@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import Composer from "./Composer";
 import { asciiPreview, formatTs, frameByteLength, frameMatches, hexPreview } from "./format";
 import type { DirectionFilter, FrameCodec, FramePanelProps } from "./types";
 
@@ -21,6 +22,8 @@ export default function FramePanel({
   onClear,
   onSend,
   canSend = false,
+  sending = false,
+  sendError = null,
 }: FramePanelProps) {
   const [paused, setPaused] = useState(false);
   const [follow, setFollow] = useState(true);
@@ -28,7 +31,6 @@ export default function FramePanel({
   const [dirFilter, setDirFilter] = useState<DirectionFilter>("all");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<number | null>(null);
-  const [composer, setComposer] = useState("");
 
   const visible = useMemo(() => {
     const tail = follow ? frames.slice(-TAIL_CAP) : frames;
@@ -45,12 +47,6 @@ export default function FramePanel({
     setSelected(index);
     const frame = frames[index];
     if (frame) onSelectFrame?.(frame, index);
-  }
-
-  function handleSend() {
-    if (composer.length === 0 || !canSend) return;
-    onSend?.(composer);
-    setComposer("");
   }
 
   return (
@@ -191,30 +187,13 @@ export default function FramePanel({
         )}
       </ol>
 
-      <form
-        className="flex gap-2 border-t border-border px-3 py-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          handleSend();
-        }}
-      >
-        <input
-          value={composer}
-          onChange={(e) => setComposer(e.target.value)}
-          placeholder={canSend ? `Send to ${channelName}` : "Select a channel to send"}
-          disabled={!canSend}
-          aria-label="Send data"
-          autoComplete="off"
-          className="min-h-9 flex-1 rounded-[var(--radius)] border border-input bg-card px-3 py-1.5 font-mono text-sm placeholder:text-muted-foreground focus:outline-2 focus:outline-ring disabled:opacity-50"
-        />
-        <button
-          type="submit"
-          disabled={composer.length === 0 || !canSend}
-          className="min-h-9 rounded-[var(--radius)] bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-        >
-          Send
-        </button>
-      </form>
+      <Composer
+        channelName={channelName}
+        canSend={canSend}
+        sending={sending}
+        error={sendError}
+        onSend={(payload) => onSend?.(payload)}
+      />
     </section>
   );
 }
