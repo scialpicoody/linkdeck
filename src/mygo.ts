@@ -4,6 +4,21 @@ import { call, event } from "mygo-runtime";
 
 // ---- Types ----
 
+export interface AutomationRunInfo {
+  id: string;
+  name: string;
+  channel: string;
+  state: RunState;
+  currentStep: number;
+  createdAtMs: number;
+  startedAtMs?: number;
+  finishedAtMs?: number;
+  sent: number;
+  bytesSent: number;
+  matched: number;
+  error?: string;
+}
+
 /**
  * ChannelInfo is the List element: every client, server, and accepted
  * server connection in one JSON-friendly row.
@@ -36,6 +51,20 @@ export interface ConnInfo {
  * 	closed        — Close called, or retries exhausted. Terminal.
  */
 export type ConnState = "connecting" | "connected" | "reconnecting" | "listening" | "closed";
+
+export interface Event {
+  run: AutomationRunInfo;
+  kind: string;
+  phase?: string;
+  stepId?: string;
+  step?: number;
+  action?: StepKind;
+  direction?: string;
+  payload?: string;
+  tsMillis: number;
+  latencyMs?: number;
+  message?: string;
+}
 
 export interface FrameDTO {
   channel: string;
@@ -80,6 +109,8 @@ export interface ListenRequest {
 }
 
 export interface Manager {}
+
+export type MatchMode = string;
 
 /** ModemStatus carries the modem input status bits of a serial port. */
 export interface ModemStatus {
@@ -172,6 +203,17 @@ export interface RunInfo {
   endedMs: number;
 }
 
+export interface RunSpec {
+  name: string;
+  target: Target;
+  steps: Step[];
+  repeat?: number;
+  intervalMs?: number;
+  continuous?: boolean;
+}
+
+export type RunState = string;
+
 export interface SessionInfo {
   path: string;
   name: string;
@@ -191,8 +233,26 @@ export interface Spec {
   maxFrameSize?: number;
 }
 
+export interface Step {
+  kind: StepKind;
+  payload?: string;
+  mode?: MatchMode;
+  pattern?: string;
+  delayMs?: number;
+  timeoutMs?: number;
+  continueOnError?: boolean;
+}
+
+export type StepKind = string;
+
 /** StopBits is a JSON-friendly stop-bits setting. */
 export type StopBits = "1" | "1.5" | "2";
+
+export interface Target {
+  channel: string;
+  transport: string;
+  parent?: string;
+}
 
 /**
  * OpenRequest asks the service to dial a TCP client. It is JSON-friendly for
@@ -500,6 +560,38 @@ export const StreamAPI = {
   },
 } as const;
 
+/** AutomationAPI is the bound native sequence runner. */
+export const AutomationAPI = {
+  /** Cancel requests cancellation of one Run. */
+  cancel(id: string): Promise<AutomationRunInfo> {
+    return call("AutomationAPI.Cancel", id);
+  },
+  /** CancelChannel stops the active Run for a closing Channel. */
+  cancelChannel(channel: string): Promise<number> {
+    return call("AutomationAPI.CancelChannel", channel);
+  },
+  /** List returns active and recently terminal Runs. */
+  list(): Promise<AutomationRunInfo[]> {
+    return call("AutomationAPI.List");
+  },
+  /** Pause requests a boundary pause between Steps. */
+  pause(id: string): Promise<AutomationRunInfo> {
+    return call("AutomationAPI.Pause", id);
+  },
+  /** Resume releases a boundary pause. */
+  resume(id: string): Promise<AutomationRunInfo> {
+    return call("AutomationAPI.Resume", id);
+  },
+  /** Start validates and starts one automation Run. */
+  start(spec: RunSpec): Promise<AutomationRunInfo> {
+    return call("AutomationAPI.Start", spec);
+  },
+  /** Status returns one retained Run snapshot. */
+  status(id: string): Promise<AutomationRunInfo> {
+    return call("AutomationAPI.Status", id);
+  },
+} as const;
+
 // ---- Events ----
 
 /** Events sent by the Go side. Subscribe with `events.name.on(listener)`. */
@@ -525,4 +617,6 @@ export const events = {
   scriptOutput: event<OutputRow>("script-output"),
   /** ScriptRunStatus carries queued/running/final run-state transitions. */
   scriptRunStatus: event<RunInfo>("script-run-status"),
+  /** AutomationEvent carries ordered automation state, step, and IO snapshots. */
+  automationEvent: event<Event>("automation-event"),
 } as const;

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"linkdeck/internal/automation"
 	"linkdeck/internal/config"
 	"linkdeck/internal/link"
 	"linkdeck/internal/script"
@@ -36,6 +37,49 @@ var ScriptOutput = mygo.NewEvent[script.OutputRow]("script-output")
 
 // ScriptRunStatus carries queued/running/final run-state transitions.
 var ScriptRunStatus = mygo.NewEvent[script.RunInfo]("script-run-status")
+
+// AutomationEvent carries ordered automation state, step, and IO snapshots.
+var AutomationEvent = mygo.NewEvent[automation.Event]("automation-event")
+
+// AutomationAPI is the bound native sequence runner.
+type AutomationAPI struct {
+	engine *automation.Engine
+}
+
+// Start validates and starts one automation Run.
+func (a *AutomationAPI) Start(spec automation.RunSpec) (automation.RunInfo, error) {
+	return a.engine.Start(spec)
+}
+
+// Cancel requests cancellation of one Run.
+func (a *AutomationAPI) Cancel(id string) (automation.RunInfo, error) {
+	return a.engine.Cancel(id)
+}
+
+// Pause requests a boundary pause between Steps.
+func (a *AutomationAPI) Pause(id string) (automation.RunInfo, error) {
+	return a.engine.Pause(id)
+}
+
+// Resume releases a boundary pause.
+func (a *AutomationAPI) Resume(id string) (automation.RunInfo, error) {
+	return a.engine.Resume(id)
+}
+
+// Status returns one retained Run snapshot.
+func (a *AutomationAPI) Status(id string) (automation.RunInfo, error) {
+	return a.engine.Status(id)
+}
+
+// List returns active and recently terminal Runs.
+func (a *AutomationAPI) List() []automation.RunInfo {
+	return a.engine.List()
+}
+
+// CancelChannel stops the active Run for a closing Channel.
+func (a *AutomationAPI) CancelChannel(channel string) int {
+	return a.engine.CancelChannel(channel)
+}
 
 // ScriptAPI is the bound scripting surface for source/file runs and
 // long-lived sessions.
@@ -349,6 +393,21 @@ func main() {
 		TCP:    link.NewTCPTransport(tcpSvc),
 	})
 	scriptSvc := script.NewScriptService(engine)
+	var automationWindowMu sync.RWMutex
+	var automationWindow *mygo.Window
+	automationEngine := automation.NewEngine(automation.Options{
+		Sender: link.NewAutomationSender(serialSvc, tcpSvc),
+		Pool:   engine.Pool(),
+		Emit: func(event automation.Event) {
+			automationWindowMu.RLock()
+			win := automationWindow
+			automationWindowMu.RUnlock()
+			if win != nil {
+				_ = AutomationEvent.Emit(win, event)
+			}
+		},
+	})
+	automationAPI := &AutomationAPI{engine: automationEngine}
 	workspaceAPI := &WorkspaceAPI{}
 	if ws, wsErr := workspaceAPI.workspace(); wsErr != nil {
 		log.Printf("script workspace: %v; file runs disabled until configured", wsErr)
@@ -358,7 +417,7 @@ func main() {
 	scriptAPI := ScriptAPI{svc: scriptSvc}
 	streamAPI := &StreamAPI{}
 
-	mygo.Bind(serialSvc, tcpSvc, scriptAPI, workspaceAPI, &ConfigAPI{}, streamAPI)
+	mygo.Bind(serialSvc, tcpSvc, scriptAPI, workspaceAPI, &ConfigAPI{}, streamAPI, automationAPI)
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
@@ -374,6 +433,9 @@ func main() {
 			// embedded by `mygo build` otherwise (see mygo.json).
 			URL: "/",
 		})
+		automationWindowMu.Lock()
+		automationWindow = win
+		automationWindowMu.Unlock()
 		mgr := stream.NewManager(engine.Pool(), func(b stream.Batch) {
 			dtos := make([]script.FrameDTO, 0, len(b.Frames))
 			for _, f := range b.Frames {
@@ -422,5 +484,6 @@ func main() {
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)
 	}
+	automationEngine.Close()
 	engine.Close()
 }

@@ -52,6 +52,8 @@ ordering, and run retention behind a small interface:
 
 ```go
 Start(spec RunSpec) (RunInfo, error)
+Pause(runID string) (RunInfo, error)
+Resume(runID string) (RunInfo, error)
 Cancel(runID string) (RunInfo, error)
 Status(runID string) (RunInfo, error)
 List() []RunInfo
@@ -80,6 +82,8 @@ expectations without waiting for the full step timeout.
   mutable editor state.
 - A failed send stops the run unless the Sequence declares `continue`.
 - An expectation timeout stops the run unless the Sequence declares `continue`.
+- Pause takes effect at the next Step boundary; Cancel always interrupts
+  immediately.
 - Cancellation is terminal and idempotent.
 - Closing or removing the target Channel cancels its active runs.
 

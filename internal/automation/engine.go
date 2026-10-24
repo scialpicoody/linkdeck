@@ -25,6 +25,8 @@ type Options struct {
 type runState struct {
 	info   RunInfo
 	cancel context.CancelFunc
+	paused bool
+	resume chan struct{}
 }
 
 // Engine owns active Runs and bounded terminal history. All methods are safe
@@ -96,7 +98,7 @@ func (e *Engine) Start(spec RunSpec) (RunInfo, error) {
 		State:       StateQueued,
 		CreatedAtMs: script.NowMillis(),
 	}
-	e.runs[id] = &runState{info: info, cancel: cancel}
+	e.runs[id] = &runState{info: info, cancel: cancel, resume: make(chan struct{})}
 	e.active[spec.Target.Channel] = id
 	e.wg.Add(1)
 	e.mu.Unlock()
@@ -122,6 +124,55 @@ func (e *Engine) Cancel(id string) (RunInfo, error) {
 		run.cancel()
 	}
 	e.mu.Unlock()
+	return info, nil
+}
+
+// Pause requests a boundary pause. The current send/delay/expect step is
+// allowed to finish; subsequent steps wait for Resume or Cancel.
+func (e *Engine) Pause(id string) (RunInfo, error) {
+	e.mu.Lock()
+	run := e.runs[id]
+	if run == nil {
+		e.mu.Unlock()
+		return RunInfo{}, ErrRunNotFound
+	}
+	if terminal(run.info.State) || run.paused {
+		info := run.info
+		e.mu.Unlock()
+		return info, nil
+	}
+	run.paused = true
+	run.info.State = StatePaused
+	info := run.info
+	e.mu.Unlock()
+	e.emitEvent(Event{
+		Run: info, Kind: "state", Phase: string(StatePaused), TsMillis: script.NowMillis(),
+	})
+	return info, nil
+}
+
+// Resume releases a boundary pause and returns the Run to running.
+func (e *Engine) Resume(id string) (RunInfo, error) {
+	e.mu.Lock()
+	run := e.runs[id]
+	if run == nil {
+		e.mu.Unlock()
+		return RunInfo{}, ErrRunNotFound
+	}
+	if terminal(run.info.State) || !run.paused {
+		info := run.info
+		e.mu.Unlock()
+		return info, nil
+	}
+	run.paused = false
+	run.info.State = StateRunning
+	close(run.resume)
+	run.resume = make(chan struct{})
+	info := run.info
+	e.mu.Unlock()
+	e.emitEvent(Event{
+		Run: info, Kind: "state", Phase: string(StateRunning), TsMillis: script.NowMillis(),
+	})
 	return info, nil
 }
 
@@ -195,15 +246,19 @@ func (e *Engine) execute(ctx context.Context, id string, spec RunSpec) {
 		e.finish(id, StateCancelled, "")
 		return
 	}
-	info, ok := e.setRunning(id)
+	info, startedState, ok := e.setRunning(id)
 	if !ok {
 		return
 	}
 	e.emitEvent(Event{
-		Run: info, Kind: "state", Phase: string(StateRunning), TsMillis: script.NowMillis(),
+		Run: info, Kind: "state", Phase: string(startedState), TsMillis: script.NowMillis(),
 	})
 
 	for iteration := 0; spec.Continuous || iteration < spec.Repeat; iteration++ {
+		if !e.waitForResume(ctx, id) {
+			e.finish(id, StateCancelled, "")
+			return
+		}
 		if iteration > 0 && spec.IntervalMs > 0 {
 			if !e.wait(ctx, time.Duration(spec.IntervalMs)*time.Millisecond) {
 				e.finish(id, StateCancelled, "")
@@ -211,6 +266,10 @@ func (e *Engine) execute(ctx context.Context, id string, spec RunSpec) {
 			}
 		}
 		for index, step := range spec.Steps {
+			if !e.waitForResume(ctx, id) {
+				e.finish(id, StateCancelled, "")
+				return
+			}
 			if ctx.Err() != nil {
 				e.finish(id, StateCancelled, "")
 				return
@@ -309,16 +368,18 @@ func (e *Engine) execute(ctx context.Context, id string, spec RunSpec) {
 	e.finish(id, StateCompleted, "")
 }
 
-func (e *Engine) setRunning(id string) (RunInfo, bool) {
+func (e *Engine) setRunning(id string) (RunInfo, RunState, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	run := e.runs[id]
 	if run == nil || terminal(run.info.State) {
-		return RunInfo{}, false
+		return RunInfo{}, "", false
 	}
-	run.info.State = StateRunning
 	run.info.StartedAtMs = script.NowMillis()
-	return run.info, true
+	if !run.paused {
+		run.info.State = StateRunning
+	}
+	return run.info, run.info.State, true
 }
 
 func (e *Engine) startStep(id string, step int) RunInfo {
@@ -387,6 +448,28 @@ func (e *Engine) wait(ctx context.Context, duration time.Duration) bool {
 		return false
 	case <-timer.C:
 		return true
+	}
+}
+
+func (e *Engine) waitForResume(ctx context.Context, id string) bool {
+	for {
+		e.mu.Lock()
+		run := e.runs[id]
+		if run == nil || terminal(run.info.State) {
+			e.mu.Unlock()
+			return false
+		}
+		if !run.paused {
+			e.mu.Unlock()
+			return true
+		}
+		resume := run.resume
+		e.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-resume:
+		}
 	}
 }
 

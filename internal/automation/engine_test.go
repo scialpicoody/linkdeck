@@ -208,6 +208,37 @@ func TestEngineCancelsActiveRunByChannel(t *testing.T) {
 	waitState(t, engine, info.ID, StateCancelled)
 }
 
+func TestEnginePausesAtStepBoundaryAndResumes(t *testing.T) {
+	sender := &fakeSender{}
+	engine := NewEngine(Options{Sender: sender})
+	defer engine.Close()
+	info, err := engine.Start(RunSpec{
+		Target: target("c1"),
+		Steps: []Step{
+			{Kind: StepDelay, DelayMs: 30},
+			{Kind: StepSend, Payload: []byte("GO")},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Pause(info.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, engine, info.ID, StatePaused)
+	time.Sleep(80 * time.Millisecond)
+	if sender.count() != 0 {
+		t.Fatalf("paused run sent %d payloads", sender.count())
+	}
+	if _, err := engine.Resume(info.ID); err != nil {
+		t.Fatal(err)
+	}
+	done := waitState(t, engine, info.ID, StateCompleted)
+	if sender.count() != 1 || done.Sent != 1 {
+		t.Fatalf("resumed run: sends=%d info=%+v", sender.count(), done)
+	}
+}
+
 func TestEngineRepeatsSequence(t *testing.T) {
 	sender := &fakeSender{}
 	engine := NewEngine(Options{Sender: sender})
