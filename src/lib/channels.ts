@@ -41,7 +41,7 @@ export interface Channel {
 }
 
 /** An open workbench tab. One tab per open channel (no pinning). */
-export interface ChannelTab {
+interface ChannelTab {
   channelId: string;
 }
 

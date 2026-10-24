@@ -1,11 +1,11 @@
-import { X } from "lucide-react";
+import { Braces, Hexagon, ScanSearch, X } from "lucide-react";
 import { useEffect } from "react";
 import FrameDetail from "../inspector/FrameDetail";
 import type { InspectorFrame } from "../inspector/types";
 import type { Frame } from "./types";
 
 export interface FrameInspectorProps {
-  /** Selected frame + its channel; null = panel hidden. */
+  /** Selected frame + its channel; null renders the inspector empty state. */
   selection: { frame: Frame; channelName: string } | null;
   onClose: () => void;
 }
@@ -23,44 +23,61 @@ function toInspectorFrame(frame: Frame, channelName: string): InspectorFrame {
 }
 
 /**
- * Slide-over inspector (#20): renders only when a frame row is selected.
- * No selection → nothing mounted, the width returns to the frame table.
- * Escape closes; stats tab drops out (counters live in the status bar).
+ * Inspector content for the persistent operations dock. Selection is owned by
+ * the frame table; closing clears it and leaves the dock ready for another row.
  */
 export default function FrameInspector({ selection, onClose }: FrameInspectorProps) {
   useEffect(() => {
     if (selection === null) return;
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [selection, onClose]);
 
-  if (selection === null) return null;
+  if (selection === null) {
+    return (
+      <div className="signal-grid grid min-h-0 flex-1 place-items-center bg-card p-5">
+        <div className="max-w-56 text-center">
+          <span className="mx-auto grid size-12 place-items-center border border-border bg-panel-raised text-muted-foreground">
+            <ScanSearch size={22} aria-hidden="true" />
+          </span>
+          <p className="mt-4 text-xs font-medium">No frame selected</p>
+          <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
+            Select a frame in the monitor to inspect its bytes, text, and decoded JSON.
+          </p>
+          <div className="mt-5 flex justify-center gap-3 text-muted-foreground/65">
+            <Hexagon size={13} aria-label="Hex view" />
+            <Braces size={13} aria-label="JSON view" />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <aside
-      aria-label="Frame inspector"
-      className="flex h-full w-80 shrink-0 flex-col border-l border-border bg-background"
-    >
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-          Frame detail
-        </h2>
+    <div className="flex min-h-0 flex-1 flex-col bg-card">
+      <div className="flex h-9 shrink-0 items-center justify-between border-b border-border bg-panel-raised px-3">
+        <div className="min-w-0">
+          <span className="eyebrow text-muted-foreground">Frame inspector</span>
+          <span className="ml-2 font-mono text-[9px] text-muted-foreground">
+            {selection.frame.dir === "in" ? "RX" : "TX"}
+          </span>
+        </div>
         <button
           type="button"
           onClick={onClose}
           title="Close inspector (Esc)"
           aria-label="Close inspector"
-          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          className="grid size-7 place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground"
         >
-          <X size={16} aria-hidden="true" />
+          <X size={14} aria-hidden="true" />
         </button>
       </div>
       <div className="flex min-h-0 flex-1 flex-col">
         <FrameDetail frame={toInspectorFrame(selection.frame, selection.channelName)} />
       </div>
-    </aside>
+    </div>
   );
 }

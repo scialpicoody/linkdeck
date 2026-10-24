@@ -121,7 +121,7 @@ func main() {
 			Height:          800,
 			MinWidth:        480,
 			MinHeight:       360,
-			BackgroundColor: "light-dark(#f6f7f9, #0f1115)", // the page's --bg in src/style.css
+			BackgroundColor: "light-dark(#e8e4d9, #10130f)", // the page's --bg in src/style.css
 			// Opens where the user left it last time.
 			StateKey: "main",
 			// The frontend: devUrl during `mygo dev`, frontendDist

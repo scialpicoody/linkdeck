@@ -1,5 +1,7 @@
-import { Plus, Settings2 } from "lucide-react";
+import { Cable, ChevronLeft, ChevronRight, Plus, Settings2 } from "lucide-react";
+import { useState } from "react";
 import { type Channel, stateColor } from "../../lib/channels";
+import { cn } from "../../lib/utils";
 
 interface SidebarProps {
   channels: Channel[];
@@ -8,9 +10,7 @@ interface SidebarProps {
   listError: string | null;
   onOpen: (id: string) => void;
   onSelect: (id: string) => void;
-  /** Open the channel dialog in create mode. */
   onAdd: () => void;
-  /** Open the channel dialog in edit mode for this channel. */
   onEdit: (id: string) => void;
 }
 
@@ -24,84 +24,177 @@ export function Sidebar({
   onAdd,
   onEdit,
 }: SidebarProps) {
+  const [collapsed, setCollapsed] = useState(false);
+  const connected = channels.filter((channel) => channel.state === "connected").length;
+
   return (
-    <nav
-      className="flex w-60 flex-col border-r border-border bg-card"
-      aria-label="Workbench sidebar"
+    <aside
+      className={cn(
+        "hidden shrink-0 flex-col border-r border-border bg-card/92 transition-[width] duration-200 md:flex",
+        collapsed ? "w-14" : "w-50",
+      )}
+      aria-label="Channels"
     >
-      <section className="flex-1 overflow-auto p-2">
-        <div className="flex items-center justify-between px-2 pt-1">
-          <h2 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-            Channels
-          </h2>
-          <button
-            type="button"
-            onClick={onAdd}
-            title="Open a channel…"
-            aria-label="Open a channel"
-            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            <Plus size={16} aria-hidden="true" />
-          </button>
-        </div>
-        {loading ? (
-          <p className="px-2 py-3 text-sm text-muted-foreground">Scanning ports…</p>
-        ) : channels.length === 0 ? (
-          <div className="px-2 py-3">
-            <p className="text-sm text-muted-foreground">
-              {listError ?? "No channels — plug in a serial device."}
-            </p>
+      <div
+        className={cn(
+          "flex h-11 shrink-0 items-center border-b border-border",
+          collapsed ? "justify-center px-1" : "justify-between px-3",
+        )}
+      >
+        {!collapsed && (
+          <div className="flex items-baseline gap-2">
+            <h2 className="eyebrow text-muted-foreground">Channels</h2>
+            <span className="font-mono text-[10px] text-muted-foreground/70">
+              {channels.length.toString().padStart(2, "0")}
+            </span>
+          </div>
+        )}
+        <div className="flex items-center gap-0.5">
+          {!collapsed && (
             <button
               type="button"
               onClick={onAdd}
-              className="mt-2 min-h-9 w-full rounded-[var(--radius)] bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90"
+              title="Open a channel"
+              aria-label="Open a channel"
+              className="grid size-7 place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground"
             >
-              Open a channel…
+              <Plus size={15} aria-hidden="true" />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setCollapsed((value) => !value)}
+            title={collapsed ? "Expand channels" : "Collapse channels"}
+            aria-label={collapsed ? "Expand channels" : "Collapse channels"}
+            className="grid size-7 place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground"
+          >
+            {collapsed ? (
+              <ChevronRight size={15} aria-hidden="true" />
+            ) : (
+              <ChevronLeft size={15} aria-hidden="true" />
+            )}
+          </button>
+        </div>
+      </div>
+
+      <div className={cn("min-h-0 flex-1 overflow-y-auto py-2", collapsed ? "px-1" : "px-1.5")}>
+        {loading ? (
+          <div className={cn("space-y-1.5", collapsed ? "px-1" : "px-2")}>
+            {[0, 1, 2].map((item) => (
+              <div key={item} className="h-10 animate-pulse bg-muted/70" />
+            ))}
+          </div>
+        ) : channels.length === 0 ? (
+          <div className={cn(collapsed ? "px-0" : "px-1")}>
+            {!collapsed && (
+              <div className="border border-dashed border-border bg-background/45 px-3 py-4">
+                <Cable size={18} className="text-muted-foreground" aria-hidden="true" />
+                <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+                  No serial ports detected. Connect a device, then refresh.
+                </p>
+                {listError !== null && (
+                  <p className="mt-2 text-[11px] leading-snug text-danger">{listError}</p>
+                )}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={onAdd}
+              title="Open a channel"
+              className={cn(
+                "mt-2 flex h-9 items-center justify-center gap-1.5 border border-primary/60 bg-primary text-xs font-semibold text-primary-foreground hover:bg-primary/88",
+                collapsed ? "w-9" : "w-full",
+              )}
+            >
+              <Plus size={14} aria-hidden="true" />
+              {!collapsed && "Open channel"}
             </button>
           </div>
         ) : (
-          <ul className="mt-1 space-y-0.5">
-            {channels.map((ch) => (
-              <li
-                key={ch.id}
-                className={`group flex w-full items-center gap-1 rounded-[var(--radius)] px-1 py-0.5 hover:bg-muted ${
-                  ch.id === activeId ? "bg-muted" : ""
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    onOpen(ch.id);
-                    onSelect(ch.id);
-                  }}
-                  className="flex min-w-0 flex-1 items-center gap-2 px-1 py-1 text-left text-sm"
-                  title={ch.endpoint}
-                >
-                  <span
-                    role="img"
-                    aria-label={`state: ${ch.state}`}
-                    className="inline-block h-2 w-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: stateColor(ch.state) }}
-                  />
-                  <span className="min-w-0 flex-1 truncate font-mono text-xs">{ch.name}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onEdit(ch.id)}
-                  title={`Settings for ${ch.name}`}
-                  aria-label={`Settings for ${ch.name}`}
-                  className="rounded p-1 text-muted-foreground opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-secondary hover:text-foreground"
-                >
-                  <Settings2 size={14} aria-hidden="true" />
-                </button>
-              </li>
-            ))}
+          <ul className="space-y-0.5">
+            {channels.map((channel) => {
+              const active = channel.id === activeId;
+              return (
+                <li key={channel.id} className="group relative">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onOpen(channel.id);
+                      onSelect(channel.id);
+                    }}
+                    title={collapsed ? `${channel.name} · ${channel.state}` : channel.endpoint}
+                    className={cn(
+                      "flex min-h-11 w-full items-center text-left transition-colors",
+                      collapsed ? "justify-center px-1" : "gap-2.5 px-2.5",
+                      active
+                        ? "bg-secondary text-foreground"
+                        : "text-card-foreground hover:bg-muted/80",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "absolute inset-y-1.5 left-0 w-0.5",
+                        active ? "bg-primary" : "bg-transparent",
+                      )}
+                      aria-hidden="true"
+                    />
+                    <span
+                      className="grid size-6 shrink-0 place-items-center border border-border bg-background/60"
+                      aria-hidden="true"
+                    >
+                      <Cable size={12} />
+                    </span>
+                    {!collapsed && (
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-1.5">
+                          <span className="min-w-0 flex-1 truncate font-mono text-[11px] font-medium">
+                            {channel.name}
+                          </span>
+                          <span
+                            className="size-1.5 shrink-0 rounded-full"
+                            style={{ backgroundColor: stateColor(channel.state) }}
+                          />
+                        </span>
+                        <span className="mt-0.5 flex items-center justify-between gap-2 font-mono text-[8px] text-muted-foreground uppercase">
+                          <span className="truncate">{channel.state}</span>
+                          <span>{channel.rxBytes + channel.txBytes} B</span>
+                        </span>
+                      </span>
+                    )}
+                  </button>
+                  {!collapsed && (
+                    <button
+                      type="button"
+                      onClick={() => onEdit(channel.id)}
+                      title={`Settings for ${channel.name}`}
+                      aria-label={`Settings for ${channel.name}`}
+                      className="absolute top-1/2 right-1 grid size-6 -translate-y-1/2 place-items-center bg-card/95 text-muted-foreground opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 hover:text-foreground"
+                    >
+                      <Settings2 size={12} aria-hidden="true" />
+                    </button>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
-        {listError !== null && channels.length > 0 && (
-          <p className="px-2 py-2 text-xs text-red-500">Port refresh failed: {listError}</p>
-        )}
-      </section>
-    </nav>
+      </div>
+
+      {!collapsed && (
+        <div className="border-t border-border px-3 py-2.5">
+          <div className="flex items-center justify-between font-mono text-[9px] text-muted-foreground uppercase">
+            <span>Active links</span>
+            <span className="text-foreground">
+              {connected}/{channels.length}
+            </span>
+          </div>
+          {listError !== null && channels.length > 0 && (
+            <p className="mt-1.5 line-clamp-2 text-[10px] leading-snug text-danger">
+              Refresh: {listError}
+            </p>
+          )}
+        </div>
+      )}
+    </aside>
   );
 }

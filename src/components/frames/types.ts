@@ -7,7 +7,7 @@
  */
 
 /** Direction of a captured frame: inbound from the device, or outbound echo. */
-export type FrameDirection = "in" | "out";
+type FrameDirection = "in" | "out";
 
 /** One captured chunk of channel traffic. `ts` is epoch millis. */
 export interface Frame {
@@ -64,12 +64,4 @@ export interface FramePanelProps {
   onSelectFrame?: (frame: Frame, index: number) => void;
   /** Clear history for this channel. */
   onClear?: () => void;
-  /** Send seam, owned by the parent (normalized payload since #19). */
-  onSend?: (payload: SendPayload) => void;
-  /** Whether the send box is usable (false when no sendable channel). */
-  canSend?: boolean;
-  /** In-flight send; disables the composer submit. */
-  sending?: boolean;
-  /** Last send failure, shown inline under the composer. */
-  sendError?: string | null;
 }

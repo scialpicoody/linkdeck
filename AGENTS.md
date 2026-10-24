@@ -98,7 +98,12 @@ YAML lives at `os.UserConfigDir()/linkdeck/config.yaml`. Load failures (missing 
 
 ### Frontend
 
-React 19 + TypeScript (strict, `noUncheckedIndexedAccess`) + Vite + Tailwind v4. Components follow a hand-ported shadcn-style token approach (no shadcn CLI/runtime); Radix primitives, `lucide-react`, and `sonner` toasts are the adopted primitives. xterm.js v6 renders the terminal; Monaco lazy-loads for the Lua editor. Heavy panels are code-split via `React.lazy`. Light/dark is CSS-token driven in `src/style.css`.
+React 19 + TypeScript (strict, `noUncheckedIndexedAccess`) + Vite + Tailwind v4. Components follow a hand-ported shadcn-style token approach (no shadcn CLI/runtime); Radix primitives, `lucide-react`, and `sonner` toasts are the adopted primitives. The frame table is the primary traffic view; Monaco lazy-loads for the Lua editor. Heavy panels are code-split via `React.lazy`. Light/dark is CSS-token driven in `src/style.css`.
+
+The canonical workbench layout, visual language, component contracts, and
+current frontend gaps live in `docs/design/workbench.md`. Read it before
+changing frontend information architecture or visual tokens. The visual
+direction is recorded in `docs/adr/0001-signal-bench-visual-language.md`.
 
 `src/lib/channels.ts` is the shared channel/tab contract consumed by sibling panels: treat it as additive-only and coordinate before renaming. Today the sidebar polls `SerialService.list()` every 3 s; counters are fed by transport/stream integration.
 

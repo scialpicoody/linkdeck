@@ -1,8 +1,10 @@
+import { Code2, ScanSearch, SendHorizontal, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Toaster, toast } from "sonner";
 import type { ChannelFormValue } from "./components/channels";
 import { ChannelDialog } from "./components/channels";
 import {
+  Composer,
   type Frame,
   FrameInspector,
   FramePanel,
@@ -11,17 +13,14 @@ import {
 } from "./components/frames";
 import { Sidebar } from "./components/layout/Sidebar";
 import { StatusBar } from "./components/layout/StatusBar";
-import { TabStrip } from "./components/layout/TabStrip";
+import { type MainView, WorkbenchHeader } from "./components/layout/WorkbenchHeader";
 import type { ScriptEntry, ScriptOutputRow } from "./components/scripts";
 import { ScriptEditor, ScriptLibrary, ScriptOutput } from "./components/scripts";
-import { ConfirmDialog } from "./components/ui/ConfirmDialog";
 import { HintsProvider } from "./components/ui/Hint";
 import { useChannels } from "./lib/channels";
 import { isHostAvailable } from "./lib/host";
+import { cn } from "./lib/utils";
 import { ConfigAPI, type Preset, SerialService } from "./mygo";
-
-/** Main-area view: frame monitor vs script workspace (task states). */
-type MainView = "monitor" | "scripts";
 
 const DEMO_SCRIPTS: ScriptEntry[] = [
   { id: "at-probe", name: "at-probe.lua", path: "scripts/at-probe.lua", origin: "workspace" },
@@ -34,13 +33,11 @@ const LUA_STARTER =
 export default function App() {
   const {
     channels,
-    tabs,
     activeId,
     active,
     portsLoading,
     listError,
     openChannel,
-    closeChannel,
     selectChannel,
     markRead,
     resetCounters,
@@ -54,13 +51,13 @@ export default function App() {
     null,
   );
   const [mainView, setMainView] = useState<MainView>("monitor");
+  const [dockTab, setDockTab] = useState<"send" | "inspect">("send");
   // Scripts view: open editor tabs (multi-tab) + per-tab sources.
   const [openScriptIds, setOpenScriptIds] = useState<string[]>([]);
   const [selectedScriptId, setSelectedScriptId] = useState<string | null>(null);
   const [scriptSources, setScriptSources] = useState<Record<string, string>>({});
   const [outputRows, setOutputRows] = useState<ScriptOutputRow[]>([]);
   const [errorLine, setErrorLine] = useState<number | null>(null);
-  const [pendingCloseId, setPendingCloseId] = useState<string | null>(null);
   // Channel dialog: null = closed; {mode:"create"} or {mode:"edit", id}.
   const [channelDialog, setChannelDialog] = useState<
     { mode: "create" } | { mode: "edit"; id: string } | null
@@ -239,170 +236,210 @@ export default function App() {
 
   return (
     <HintsProvider>
-      <div className="flex h-screen w-full flex-col bg-background text-foreground">
-        <div className="flex min-h-0 flex-1">
-          <Sidebar
-            channels={channels}
-            activeId={activeId}
-            loading={portsLoading}
-            listError={listError}
-            onOpen={openChannel}
-            onSelect={selectChannel}
-            onAdd={() => setChannelDialog({ mode: "create" })}
-            onEdit={(id) => setChannelDialog({ mode: "edit", id })}
-          />
-          <div className="flex min-w-0 flex-1 flex-col">
-            <div className="flex min-w-0 items-stretch gap-2 border-b border-border bg-background">
-              <div
-                role="tablist"
-                aria-label="Main view"
-                className="flex shrink-0 items-center gap-1 self-center rounded-md bg-muted p-0.5"
-              >
-                {(["monitor", "scripts"] as const).map((v) => (
-                  <button
-                    key={v}
-                    type="button"
-                    role="tab"
-                    aria-selected={mainView === v}
-                    onClick={() => setMainView(v)}
-                    className={
-                      mainView === v
-                        ? "rounded px-3 py-1 text-xs font-medium bg-card shadow-sm"
-                        : "rounded px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
-                    }
-                  >
-                    {v === "monitor" ? "Monitor" : "Scripts"}
-                  </button>
-                ))}
-              </div>
-              {mainView === "monitor" && (
-                <TabStrip
-                  tabs={tabs}
-                  channels={channels}
-                  activeId={activeId}
-                  onSelect={selectChannel}
-                  onClose={(id) => setPendingCloseId(id)}
+      <div className="flex h-dvh w-full flex-col overflow-hidden bg-background text-foreground">
+        <WorkbenchHeader
+          view={mainView}
+          onViewChange={setMainView}
+          channel={active}
+          onAddChannel={() => setChannelDialog({ mode: "create" })}
+        />
+
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          {mainView === "monitor" && (
+            <Sidebar
+              channels={channels}
+              activeId={activeId}
+              loading={portsLoading}
+              listError={listError}
+              onOpen={openChannel}
+              onSelect={selectChannel}
+              onAdd={() => setChannelDialog({ mode: "create" })}
+              onEdit={(id) => setChannelDialog({ mode: "edit", id })}
+            />
+          )}
+
+          <main className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+            {mainView === "monitor" ? (
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col xl:flex-row">
+                <FramePanel
+                  channelName={active?.name ?? null}
+                  frames={active !== null ? (framesByChannel[active.id] ?? []) : []}
+                  onSelectFrame={(frame, index) => {
+                    setFrameSelection({ frame, index });
+                    setDockTab("inspect");
+                  }}
+                  onClear={handleClear}
                 />
-              )}
-            </div>
-            <div className="flex min-h-0 flex-1">
-              {mainView === "monitor" ? (
-                <>
-                  <main className="flex min-w-0 flex-1 flex-col">
-                    <div className="min-h-0 flex-1">
-                      <FramePanel
-                        channelName={active?.name ?? null}
-                        frames={active !== null ? (framesByChannel[active.id] ?? []) : []}
-                        onSelectFrame={(frame, index) => setFrameSelection({ frame, index })}
-                        onSend={handleSend}
-                        onClear={handleClear}
-                        canSend={active !== null && active.kind === "serial"}
-                        sending={sending}
-                        sendError={sendError}
-                      />
-                    </div>
-                  </main>
-                  <FrameInspector
-                    selection={
-                      frameSelection !== null && active !== null
-                        ? { frame: frameSelection.frame, channelName: active.name }
-                        : null
-                    }
-                    onClose={() => setFrameSelection(null)}
-                  />
-                </>
-              ) : (
-                <main className="flex min-w-0 flex-1">
-                  <div className="w-64 shrink-0 overflow-auto border-r border-border">
-                    <ScriptLibrary
-                      workspaceScripts={DEMO_SCRIPTS}
-                      selectedId={selectedScriptId}
-                      onSelect={openScriptTab}
-                      onRun={handleRun}
-                    />
+
+                <aside
+                  aria-label="Channel operations"
+                  className="flex h-[42%] min-h-0 w-full shrink-0 flex-col border-t border-border bg-card xl:h-auto xl:w-80 xl:border-t-0 xl:border-l"
+                >
+                  <div
+                    role="tablist"
+                    aria-label="Operations"
+                    className="flex h-10 shrink-0 border-b border-border bg-card"
+                  >
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={dockTab === "send"}
+                      onClick={() => setDockTab("send")}
+                      className={cn(
+                        "flex flex-1 items-center justify-center gap-1.5 border-r border-border font-mono text-[9px] tracking-wide uppercase",
+                        dockTab === "send"
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                      )}
+                    >
+                      <SendHorizontal size={12} aria-hidden="true" />
+                      Transmit
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={dockTab === "inspect"}
+                      onClick={() => setDockTab("inspect")}
+                      className={cn(
+                        "flex flex-1 items-center justify-center gap-1.5 font-mono text-[9px] tracking-wide uppercase",
+                        dockTab === "inspect"
+                          ? "bg-secondary text-foreground"
+                          : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                      )}
+                    >
+                      <ScanSearch size={12} aria-hidden="true" />
+                      Inspect
+                      {frameSelection !== null && (
+                        <span className="size-1 rounded-full bg-primary" aria-hidden="true" />
+                      )}
+                    </button>
                   </div>
-                  <div className="flex min-w-0 flex-1 flex-col">
-                    {openScriptIds.length === 0 ? (
-                      <div className="grid flex-1 place-items-center p-6 text-center">
-                        <p className="text-sm text-muted-foreground">
-                          Pick a script on the left to open it in a tab. The monitor stays one click
-                          away.
+
+                  {dockTab === "send" ? (
+                    <Composer
+                      channelName={active?.name ?? null}
+                      canSend={active !== null && active.kind === "serial"}
+                      sending={sending}
+                      error={sendError}
+                      onSend={(payload) => void handleSend(payload)}
+                    />
+                  ) : (
+                    <FrameInspector
+                      selection={
+                        frameSelection !== null && active !== null
+                          ? { frame: frameSelection.frame, channelName: active.name }
+                          : null
+                      }
+                      onClose={() => setFrameSelection(null)}
+                    />
+                  )}
+                </aside>
+              </div>
+            ) : (
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row">
+                <div className="max-h-36 shrink-0 overflow-y-auto border-b border-border bg-card lg:max-h-none lg:w-56 lg:border-r lg:border-b-0">
+                  <ScriptLibrary
+                    workspaceScripts={DEMO_SCRIPTS}
+                    selectedId={selectedScriptId}
+                    onSelect={openScriptTab}
+                    onRun={handleRun}
+                  />
+                </div>
+
+                <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                  {openScriptIds.length === 0 ? (
+                    <div className="signal-grid grid flex-1 place-items-center bg-card p-6 text-center">
+                      <div className="max-w-sm">
+                        <span className="mx-auto grid size-12 place-items-center border border-border bg-panel-raised text-muted-foreground">
+                          <Code2 size={22} aria-hidden="true" />
+                        </span>
+                        <p className="mt-4 text-sm font-medium">Open a Lua script</p>
+                        <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+                          Choose a workspace script from the library. Output stays linked beneath
+                          the editor.
                         </p>
                       </div>
-                    ) : (
-                      <>
-                        <div
-                          role="tablist"
-                          aria-label="Open scripts"
-                          className="flex items-center gap-1 overflow-x-auto border-b border-border px-2 py-1.5"
-                        >
-                          {openScriptIds.map((id) => {
-                            const entry = DEMO_SCRIPTS.find((s) => s.id === id);
-                            const isSel = id === selectedScriptId;
-                            return (
-                              <div
-                                key={id}
-                                role="tab"
-                                aria-selected={isSel}
-                                tabIndex={0}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter" || e.key === " ") {
-                                    e.preventDefault();
-                                    setSelectedScriptId(id);
-                                    setErrorLine(null);
-                                  }
+                    </div>
+                  ) : (
+                    <>
+                      <div
+                        role="tablist"
+                        aria-label="Open scripts"
+                        className="flex h-9 shrink-0 items-center overflow-x-auto border-b border-border bg-panel-raised px-1.5"
+                      >
+                        {openScriptIds.map((id) => {
+                          const entry = DEMO_SCRIPTS.find((script) => script.id === id);
+                          const isSelected = id === selectedScriptId;
+                          return (
+                            <div
+                              key={id}
+                              role="tab"
+                              aria-selected={isSelected}
+                              tabIndex={0}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter" || event.key === " ") {
+                                  event.preventDefault();
+                                  setSelectedScriptId(id);
+                                  setErrorLine(null);
+                                }
+                              }}
+                              className={cn(
+                                "flex h-7 items-center gap-1 border border-transparent px-1.5",
+                                isSelected && "border-border bg-card",
+                              )}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedScriptId(id);
+                                  setErrorLine(null);
                                 }}
-                                className={`flex items-center gap-1 rounded-md border px-2 py-1 text-xs ${
-                                  isSel ? "border-border bg-card" : "border-transparent"
-                                }`}
+                                className="max-w-40 truncate font-mono text-[10px]"
                               >
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedScriptId(id);
-                                    setErrorLine(null);
-                                  }}
-                                  className="max-w-40 truncate font-mono"
-                                >
-                                  {entry?.name ?? id}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => closeScriptTab(id)}
-                                  aria-label={`Close ${entry?.name ?? id}`}
-                                  className="rounded p-0.5 text-muted-foreground hover:bg-muted"
-                                >
-                                  ×
-                                </button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                        <div className="min-h-0 flex-1">
-                          <ScriptEditor
-                            value={
-                              selectedScriptId !== null
-                                ? (scriptSources[selectedScriptId] ?? LUA_STARTER)
-                                : LUA_STARTER
-                            }
-                            onChange={(v) => {
-                              if (selectedScriptId !== null)
-                                setScriptSources((prev) => ({ ...prev, [selectedScriptId]: v }));
-                            }}
-                            errorLine={errorLine}
-                          />
-                        </div>
-                      </>
-                    )}
-                  </div>
-                  <div className="w-80 shrink-0 overflow-auto border-l border-border">
-                    <ScriptOutput rows={outputRows} onErrorLine={setErrorLine} />
-                  </div>
-                </main>
-              )}
-            </div>
-          </div>
+                                {entry?.name ?? id}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => closeScriptTab(id)}
+                                aria-label={`Close ${entry?.name ?? id}`}
+                                className="grid size-5 place-items-center text-muted-foreground hover:bg-muted hover:text-foreground"
+                              >
+                                <X size={11} aria-hidden="true" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <div className="min-h-0 flex-1">
+                        <ScriptEditor
+                          value={
+                            selectedScriptId !== null
+                              ? (scriptSources[selectedScriptId] ?? LUA_STARTER)
+                              : LUA_STARTER
+                          }
+                          onChange={(value) => {
+                            if (selectedScriptId !== null)
+                              setScriptSources((previous) => ({
+                                ...previous,
+                                [selectedScriptId]: value,
+                              }));
+                          }}
+                          errorLine={errorLine}
+                        />
+                      </div>
+
+                      <div className="h-44 shrink-0 overflow-hidden border-t border-border bg-card">
+                        <ScriptOutput rows={outputRows} onErrorLine={setErrorLine} />
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+          </main>
         </div>
+
         <StatusBar channel={active} onResetCounters={resetCounters} />
         <Toaster position="bottom-right" theme="system" />
         <ChannelDialog
@@ -414,19 +451,6 @@ export default function App() {
             if (!open) setChannelDialog(null);
           }}
           onSubmit={handleChannelSubmit}
-        />
-        <ConfirmDialog
-          open={pendingCloseId !== null}
-          onOpenChange={(open) => {
-            if (!open) setPendingCloseId(null);
-          }}
-          title="Close channel tab?"
-          description="The tab closes but the channel stays listed in the sidebar. Unsent composer text is lost."
-          confirmLabel="Close tab"
-          onConfirm={() => {
-            if (pendingCloseId !== null) closeChannel(pendingCloseId);
-            setPendingCloseId(null);
-          }}
         />
       </div>
     </HintsProvider>

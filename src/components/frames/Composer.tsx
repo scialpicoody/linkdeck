@@ -1,4 +1,6 @@
-import { useRef, useState } from "react";
+import { CornerDownLeft, History, Pencil, Plus, Send, Trash2 } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { cn } from "../../lib/utils";
 import type { NewlineSuffix, SendCodec } from "./types";
 
 export interface ComposerProps {
@@ -9,35 +11,73 @@ export interface ComposerProps {
   onSend: (payload: { ascii: SendCodec; text: string; suffix: NewlineSuffix }) => void;
 }
 
-const HISTORY_CAP = 50;
+interface QuickSend {
+  id: string;
+  label: string;
+  text: string;
+  codec: SendCodec;
+}
 
-function suffixLabel(s: NewlineSuffix): string {
-  switch (s) {
-    case "none":
-      return "None";
-    case "lf":
-      return "LF \\n";
-    case "crlf":
-      return "CRLF \\r\\n";
+const HISTORY_CAP = 50;
+const QUICK_STORAGE_KEY = "linkdeck.quick-sends.v1";
+const HISTORY_STORAGE_KEY = "linkdeck.send-history.v1";
+
+function readLocal<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw === null ? fallback : (JSON.parse(raw) as T);
+  } catch {
+    return fallback;
   }
 }
 
+function writeLocal(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Persistence is best-effort in restricted webviews.
+  }
+}
+
+function suffixLabel(suffix: NewlineSuffix): string {
+  switch (suffix) {
+    case "none":
+      return "NONE";
+    case "lf":
+      return "LF";
+    case "crlf":
+      return "CRLF";
+  }
+}
+
+function previewText(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > 32 ? `${flat.slice(0, 32)}…` : flat;
+}
+
 /**
- * Send composer (#19): ASCII/HEX codec + newline suffix + history.
- *
- * Encoding contract: ASCII text and the suffix go out verbatim; HEX input
- * is `AA BB …` bytes. The owner converts to the wire form (base64 for the
- * Go []byte param) — this component only validates and labels.
+ * Transmit dock: a multiline composer, per-codec history, and saved shortcuts.
+ * It stays mounted beside the frame stream so send is always one action away.
  */
 export default function Composer({ channelName, canSend, sending, error, onSend }: ComposerProps) {
   const [text, setText] = useState("");
   const [codec, setCodec] = useState<SendCodec>("ascii");
   const [suffix, setSuffix] = useState<NewlineSuffix>("lf");
-  const [history, setHistory] = useState<string[]>([]);
+  const [history, setHistory] = useState<Record<SendCodec, string[]>>(() =>
+    readLocal(HISTORY_STORAGE_KEY, { ascii: [], hex: [] }),
+  );
   const [histIdx, setHistIdx] = useState(-1);
+  const [showHistory, setShowHistory] = useState(false);
   const [hexError, setHexError] = useState<string | null>(null);
+  const [quickSends, setQuickSends] = useState<QuickSend[]>(() => readLocal(QUICK_STORAGE_KEY, []));
+  const [editingQuickId, setEditingQuickId] = useState<string | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const inputRef = useRef<HTMLInputElement>(null);
+  const codecHistory = history[codec];
+  const editingQuick = useMemo(
+    () => quickSends.find((item) => item.id === editingQuickId) ?? null,
+    [quickSends, editingQuickId],
+  );
 
   function validateHex(value: string): boolean {
     const compact = value.replace(/\s+/g, "");
@@ -46,126 +86,320 @@ export default function Composer({ channelName, canSend, sending, error, onSend 
       return true;
     }
     if (!/^[0-9a-fA-F]*$/.test(compact)) {
-      setHexError("HEX: only 0-9 A-F and spaces.");
+      setHexError("Only 0-9 A-F and spaces are valid.");
       return false;
     }
     if (compact.length % 2 !== 0) {
-      setHexError("HEX: odd number of digits — need full bytes.");
+      setHexError("Hex input needs complete byte pairs.");
       return false;
     }
     setHexError(null);
     return true;
   }
 
-  function handleSend(): void {
-    if (text.length === 0 || !canSend || sending) return;
-    if (codec === "hex" && !validateHex(text)) return;
-    onSend({ ascii: codec, text, suffix });
-    setHistory((h) => [text, ...h].slice(0, HISTORY_CAP));
+  function remember(value: string, targetCodec: SendCodec): void {
+    setHistory((previous) => {
+      const next = {
+        ...previous,
+        [targetCodec]: [value, ...previous[targetCodec].filter((item) => item !== value)].slice(
+          0,
+          HISTORY_CAP,
+        ),
+      };
+      writeLocal(HISTORY_STORAGE_KEY, next);
+      return next;
+    });
+  }
+
+  function submit(targetText = text, targetCodec = codec): void {
+    if (targetText.trim().length === 0 || !canSend || sending) return;
+    if (targetCodec === "hex" && !validateHex(targetText)) return;
+    onSend({ ascii: targetCodec, text: targetText, suffix });
+    remember(targetText, targetCodec);
     setHistIdx(-1);
-    setText("");
+    setShowHistory(false);
+    setText(targetText);
     setHexError(null);
     inputRef.current?.focus();
   }
 
-  function recall(dir: 1 | -1): void {
-    if (history.length === 0) return;
-    const next = histIdx + dir;
-    if (next < -1 || next >= history.length) return;
+  function recall(direction: 1 | -1): void {
+    if (codecHistory.length === 0) return;
+    const next = Math.min(Math.max(histIdx + direction, -1), codecHistory.length - 1);
     setHistIdx(next);
-    setText(next === -1 ? "" : (history[next] as string));
+    setText(next === -1 ? "" : (codecHistory[next] as string));
+  }
+
+  function saveQuick(): void {
+    if (text.trim().length === 0) return;
+    if (editingQuick !== null) {
+      const next = quickSends.map((item) =>
+        item.id === editingQuick.id ? { ...item, text, codec } : item,
+      );
+      setQuickSends(next);
+      writeLocal(QUICK_STORAGE_KEY, next);
+      setEditingQuickId(null);
+      return;
+    }
+    const nextId = crypto.randomUUID();
+    const next = [
+      ...quickSends,
+      {
+        id: nextId,
+        label: `${codec.toUpperCase()} ${String(quickSends.length + 1).padStart(2, "0")}`,
+        text,
+        codec,
+      },
+    ];
+    setQuickSends(next);
+    setEditingQuickId(nextId);
+    writeLocal(QUICK_STORAGE_KEY, next);
+  }
+
+  function loadQuick(item: QuickSend): void {
+    setText(item.text);
+    setCodec(item.codec);
+    if (item.codec === "hex") validateHex(item.text);
+    else setHexError(null);
+    setHistIdx(-1);
+    inputRef.current?.focus();
+  }
+
+  function deleteQuick(id: string): void {
+    const next = quickSends.filter((item) => item.id !== id);
+    setQuickSends(next);
+    if (editingQuickId === id) setEditingQuickId(null);
+    writeLocal(QUICK_STORAGE_KEY, next);
   }
 
   return (
-    <div className="border-t border-border">
-      <form
-        className="flex items-center gap-2 px-3 pt-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          handleSend();
-        }}
-      >
-        <fieldset className="flex shrink-0 items-center gap-1">
-          <legend className="sr-only">Send codec</legend>
-          {(["ascii", "hex"] as const).map((c) => (
+    <div className="flex min-h-0 flex-1 flex-col bg-panel-raised">
+      <div className="flex h-9 shrink-0 items-center justify-between border-b border-border px-3">
+        <span className="eyebrow text-muted-foreground">Transmit</span>
+        <span className="max-w-44 truncate font-mono text-[9px] text-muted-foreground">
+          {channelName ?? "no target"}
+        </span>
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-2 p-2.5">
+        <div className="flex items-center border border-border bg-card p-0.5">
+          {(["ascii", "hex"] as const).map((item) => (
             <button
-              key={c}
+              key={item}
               type="button"
-              aria-pressed={codec === c}
+              aria-pressed={codec === item}
               onClick={() => {
-                setCodec(c);
-                if (c === "ascii") setHexError(null);
-                else validateHex(text);
+                setCodec(item);
+                if (item === "hex") validateHex(text);
+                else setHexError(null);
+                setHistIdx(-1);
               }}
-              className={
-                codec === c
-                  ? "rounded-md bg-secondary px-2 py-1 font-mono text-xs font-medium"
-                  : "rounded-md px-2 py-1 font-mono text-xs text-muted-foreground hover:bg-muted"
-              }
+              className={cn(
+                "flex-1 px-2 py-1 font-mono text-[9px] uppercase transition-colors",
+                codec === item
+                  ? "bg-secondary text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
             >
-              {c.toUpperCase()}
+              {item}
             </button>
           ))}
-        </fieldset>
-        <input
+          <span className="mx-1 h-4 w-px bg-border" />
+          <button
+            type="button"
+            onClick={() => setShowHistory((value) => !value)}
+            aria-pressed={showHistory}
+            title="Send history"
+            className={cn(
+              "grid size-6 place-items-center text-muted-foreground hover:text-foreground",
+              showHistory && "bg-secondary text-foreground",
+            )}
+          >
+            <History size={12} aria-hidden="true" />
+          </button>
+        </div>
+
+        {showHistory && (
+          <div className="max-h-28 overflow-y-auto border border-border bg-card">
+            {codecHistory.length === 0 ? (
+              <p className="px-2 py-2 text-[10px] text-muted-foreground">No history yet.</p>
+            ) : (
+              codecHistory.map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => {
+                    setText(item);
+                    setShowHistory(false);
+                    inputRef.current?.focus();
+                  }}
+                  className="block w-full truncate border-b border-border/60 px-2 py-1.5 text-left font-mono text-[9px] text-muted-foreground last:border-0 hover:bg-muted hover:text-foreground"
+                >
+                  {previewText(item)}
+                </button>
+              ))
+            )}
+          </div>
+        )}
+
+        <textarea
           ref={inputRef}
           value={text}
-          onChange={(e) => {
-            setText(e.target.value);
+          onChange={(event) => {
+            setText(event.target.value);
             setHistIdx(-1);
-            if (codec === "hex") validateHex(e.target.value);
+            if (codec === "hex") validateHex(event.target.value);
           }}
-          onKeyDown={(e) => {
-            if (e.key === "ArrowUp") {
-              e.preventDefault();
+          onKeyDown={(event) => {
+            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+              event.preventDefault();
+              submit();
+            } else if (event.key === "ArrowUp" && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
               recall(1);
-            } else if (e.key === "ArrowDown") {
-              e.preventDefault();
+            } else if (event.key === "ArrowDown" && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
               recall(-1);
             }
           }}
           placeholder={
             canSend
               ? codec === "ascii"
-                ? `Send to ${channelName} — ↑↓ history`
-                : "HEX bytes, e.g. 41 54 0D 0A"
-              : "Select a channel to send"
+                ? "Type a command or payload…"
+                : "AA 55 01 0D 0A"
+              : "Open a serial channel to transmit"
           }
           disabled={!canSend}
           aria-label="Send data"
           autoComplete="off"
           spellCheck={false}
-          className="min-h-9 min-w-0 flex-1 rounded-[var(--radius)] border border-input bg-card px-3 py-1.5 font-mono text-sm placeholder:text-muted-foreground focus:outline-2 focus:outline-ring disabled:opacity-50"
+          className="min-h-28 flex-1 resize-none border border-input bg-card p-2.5 font-mono text-[11px] leading-relaxed text-foreground placeholder:text-muted-foreground/70 focus:border-ring focus:outline-none disabled:bg-muted/50 disabled:opacity-70"
         />
-        <label className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
-          <span className="sr-only">Line ending</span>
-          <select
-            value={suffix}
-            onChange={(e) => setSuffix(e.target.value as NewlineSuffix)}
-            disabled={!canSend}
-            aria-label="Line ending"
-            className="min-h-9 rounded-[var(--radius)] border border-input bg-card px-2 font-mono text-xs focus:outline-2 focus:outline-ring disabled:opacity-50"
+
+        {(hexError !== null || error !== null) && (
+          <p role="alert" className="text-[10px] leading-snug text-danger">
+            {hexError ?? error}
+          </p>
+        )}
+
+        <div className="flex items-center gap-1.5">
+          <label className="flex min-w-0 flex-1 items-center gap-1.5">
+            <span className="eyebrow shrink-0 text-muted-foreground">End</span>
+            <select
+              value={suffix}
+              onChange={(event) => setSuffix(event.target.value as NewlineSuffix)}
+              disabled={!canSend || codec === "hex"}
+              aria-label="Line ending"
+              className="h-8 min-w-0 flex-1 border border-input bg-card px-1.5 font-mono text-[9px] text-foreground focus:border-ring focus:outline-none disabled:opacity-50"
+            >
+              {(["none", "lf", "crlf"] as const).map((item) => (
+                <option key={item} value={item}>
+                  {suffixLabel(item)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={() => submit()}
+            disabled={text.trim().length === 0 || !canSend || sending || hexError !== null}
+            className="flex h-8 min-w-24 items-center justify-center gap-1.5 bg-primary px-3 text-[10px] font-semibold text-primary-foreground hover:bg-primary/88 disabled:opacity-45"
           >
-            {(["none", "lf", "crlf"] as const).map((s) => (
-              <option key={s} value={s}>
-                {suffixLabel(s)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button
-          type="submit"
-          disabled={text.length === 0 || !canSend || sending || hexError !== null}
-          className="min-h-9 shrink-0 rounded-[var(--radius)] bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-        >
-          {sending ? "Sending…" : "Send"}
-        </button>
-      </form>
-      {(hexError !== null || error !== null) && (
-        <p role="alert" className="px-3 py-1.5 text-xs text-red-600 dark:text-red-400">
-          {hexError ?? error}
-        </p>
-      )}
+            <Send size={12} aria-hidden="true" />
+            {sending ? "Sending" : "Send"}
+          </button>
+        </div>
+        <div className="flex items-center justify-between font-mono text-[8px] text-muted-foreground/75">
+          <span>⌘/Ctrl + Enter to send</span>
+          <span>{text.length} chars</span>
+        </div>
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col border-t border-border">
+        <div className="flex h-8 shrink-0 items-center justify-between border-b border-border px-3">
+          <span className="eyebrow text-muted-foreground">Quick send</span>
+          <button
+            type="button"
+            onClick={saveQuick}
+            disabled={text.trim().length === 0}
+            className="flex items-center gap-1 font-mono text-[8px] text-muted-foreground uppercase hover:text-foreground disabled:opacity-40"
+          >
+            <Plus size={10} aria-hidden="true" />
+            {editingQuick === null ? "Save current" : "Update"}
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {quickSends.length === 0 ? (
+            <div className="grid min-h-24 place-items-center px-5 text-center">
+              <p className="text-[10px] leading-relaxed text-muted-foreground">
+                Save the current payload as a shortcut. Content and codec persist locally.
+              </p>
+            </div>
+          ) : (
+            <ul>
+              {quickSends.map((item) => (
+                <li
+                  key={item.id}
+                  className={cn(
+                    "group flex min-h-9 items-center border-b border-border/60",
+                    editingQuickId === item.id && "bg-secondary/60",
+                  )}
+                >
+                  <button
+                    type="button"
+                    onClick={() => loadQuick(item)}
+                    className="min-w-0 flex-1 px-2.5 py-1.5 text-left"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className="font-mono text-[8px] text-muted-foreground uppercase">
+                        {item.codec}
+                      </span>
+                      <span className="truncate font-mono text-[9px] text-foreground">
+                        {previewText(item.text)}
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      loadQuick(item);
+                      setEditingQuickId(item.id);
+                    }}
+                    title="Edit shortcut"
+                    aria-label={`Edit shortcut ${item.label}`}
+                    className="grid size-7 place-items-center text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground"
+                  >
+                    <Pencil size={11} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => submit(item.text, item.codec)}
+                    disabled={!canSend || sending}
+                    title="Send shortcut now"
+                    aria-label={`Send shortcut ${item.label}`}
+                    className="grid size-7 place-items-center text-muted-foreground hover:text-primary disabled:opacity-35"
+                  >
+                    {item.codec === "hex" ? (
+                      <CornerDownLeft size={12} aria-hidden="true" />
+                    ) : (
+                      <Send size={11} aria-hidden="true" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteQuick(item.id)}
+                    title="Delete shortcut"
+                    aria-label={`Delete shortcut ${item.label}`}
+                    className="mr-1 grid size-7 place-items-center text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-danger"
+                  >
+                    <Trash2 size={11} aria-hidden="true" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
