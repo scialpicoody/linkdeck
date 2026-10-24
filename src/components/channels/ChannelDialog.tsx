@@ -1,0 +1,271 @@
+import * as Dialog from "@radix-ui/react-dialog";
+import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
+import type { FramingKind } from "../inspector/types";
+import { type FieldOption, FieldSelect } from "../ui/FieldSelect";
+import type { ChannelFormValue } from "./types";
+
+export interface ChannelDialogProps {
+  /** Null = "open new channel"; non-null = edit existing (回填). */
+  initial: ChannelFormValue | null;
+  /** Available port names from polling (may be empty in browser-only mode). */
+  ports: string[];
+  /** Named presets for one-click fill (map name → value). */
+  presets: Record<string, ChannelFormValue>;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** Owner sequences close+open and reports failure; dialog closes on resolve. */
+  onSubmit: (value: ChannelFormValue) => Promise<void>;
+}
+
+const BAUD_RATES = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
+const DATA_BITS = [5, 6, 7, 8];
+const PARITIES = ["none", "odd", "even", "mark", "space"];
+const STOP_BITS = ["1", "1.5", "2"];
+const FRAMING: { value: FramingKind; label: string }[] = [
+  { value: "delimiter", label: "Delimiter" },
+  { value: "length-prefix", label: "Length prefix" },
+  { value: "fixed-size", label: "Fixed size" },
+  { value: "header-checksum", label: "Header + checksum" },
+];
+
+const FRAMING_HINT: Record<FramingKind, string> = {
+  delimiter: "Delimiter byte as hex, e.g. 0A for LF.",
+  "length-prefix": "Length-field width in bytes, e.g. 2.",
+  "fixed-size": "Frame size in bytes, e.g. 64.",
+  "header-checksum": "Checksum name, e.g. crc16.",
+};
+
+const EMPTY: ChannelFormValue = {
+  port: "",
+  baudRate: 115200,
+  dataBits: 8,
+  parity: "none",
+  stopBits: "1",
+  framing: "delimiter",
+  framingOption: "0A",
+  readTimeoutMs: 0,
+};
+
+function optionsOf(values: (string | number)[]): FieldOption[] {
+  return values.map((v) => ({ value: String(v), label: String(v) }));
+}
+
+/**
+ * Unified open/edit dialog for channels (#18).
+ *
+ * Create mode (initial null): pick a port + parameters + optional preset
+ * fill, submit calls SerialService.open via the owner. Edit mode (initial
+ * set): the same form pre-filled; the owner sequences close+reopen and
+ * rolls back on failure — this dialog never touches the transport itself.
+ */
+export function ChannelDialog({
+  initial,
+  ports,
+  presets,
+  open,
+  onOpenChange,
+  onSubmit,
+}: ChannelDialogProps) {
+  const [draft, setDraft] = useState<ChannelFormValue>(initial ?? EMPTY);
+  const [presetName, setPresetName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Re-seed the form every time the dialog opens (create vs edit switch).
+  useEffect(() => {
+    if (open) {
+      setDraft(initial ?? EMPTY);
+      setPresetName("");
+      setError(null);
+    }
+  }, [open, initial]);
+
+  const dirty = useMemo(
+    () => JSON.stringify(draft) !== JSON.stringify(initial ?? EMPTY),
+    [draft, initial],
+  );
+
+  function set<K extends keyof ChannelFormValue>(key: K, value: ChannelFormValue[K]): void {
+    setDraft((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function applyPreset(name: string): void {
+    setPresetName(name);
+    const p = presets[name];
+    if (p) setDraft({ ...p });
+  }
+
+  async function handleSubmit(): Promise<void> {
+    if (draft.port.trim().length === 0) {
+      setError("Port is required.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await onSubmit(draft);
+      onOpenChange(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      toast.error(initial === null ? "Open channel failed" : "Apply config failed", {
+        description: message,
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const presetOptions: FieldOption[] = useMemo(
+    () => Object.keys(presets).map((n) => ({ value: n, label: n })),
+    [presets],
+  );
+
+  const labelClass = "mb-1 block text-xs font-medium text-muted-foreground";
+  const inputClass =
+    "min-h-9 w-full rounded-[var(--radius)] border border-input bg-card px-2.5 font-mono text-sm text-foreground placeholder:text-muted-foreground focus:outline-2 focus:outline-ring";
+
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50" />
+        <Dialog.Content
+          aria-describedby={undefined}
+          className="fixed top-1/2 left-1/2 z-50 max-h-[calc(100%-2rem)] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 overflow-auto rounded-[var(--radius)] border border-border bg-card p-4 text-card-foreground shadow-lg"
+        >
+          <Dialog.Title className="text-sm font-medium">
+            {initial === null ? "Open channel" : `Channel settings — ${initial.port}`}
+          </Dialog.Title>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {initial === null
+              ? "Pick a port and parameters. Editing a live channel closes and reopens it."
+              : "Applying closes and reopens the port; on failure the previous settings are kept."}
+          </p>
+
+          <div className="mt-4 flex flex-col gap-3">
+            {presetOptions.length > 0 && (
+              <FieldSelect
+                id="channel-preset"
+                label="Preset (fills the form)"
+                value={presetName}
+                onValueChange={applyPreset}
+                options={presetOptions}
+                placeholder="Choose a preset…"
+              />
+            )}
+
+            {ports.length > 0 ? (
+              <FieldSelect
+                id="channel-port"
+                label="Port"
+                value={draft.port}
+                onValueChange={(v) => set("port", v)}
+                options={optionsOf(ports)}
+                placeholder="Choose a port…"
+              />
+            ) : (
+              <div>
+                <label htmlFor="channel-port" className={labelClass}>
+                  Port
+                </label>
+                <input
+                  id="channel-port"
+                  value={draft.port}
+                  onChange={(e) => set("port", e.target.value)}
+                  placeholder="/dev/tty.usbserial-…"
+                  autoComplete="off"
+                  className={inputClass}
+                />
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <FieldSelect
+                id="channel-baud"
+                label="Baud rate"
+                value={String(draft.baudRate)}
+                onValueChange={(v) => set("baudRate", Number(v))}
+                options={BAUD_RATES.map((b) => ({ value: String(b), label: b.toLocaleString() }))}
+              />
+              <FieldSelect
+                id="channel-data"
+                label="Data bits"
+                value={String(draft.dataBits)}
+                onValueChange={(v) => set("dataBits", Number(v) as ChannelFormValue["dataBits"])}
+                options={optionsOf(DATA_BITS)}
+              />
+              <FieldSelect
+                id="channel-parity"
+                label="Parity"
+                value={draft.parity}
+                onValueChange={(v) => set("parity", v as ChannelFormValue["parity"])}
+                options={optionsOf(PARITIES)}
+              />
+              <FieldSelect
+                id="channel-stop"
+                label="Stop bits"
+                value={draft.stopBits}
+                onValueChange={(v) => set("stopBits", v as ChannelFormValue["stopBits"])}
+                options={optionsOf(STOP_BITS)}
+              />
+            </div>
+
+            <FieldSelect
+              id="channel-framing"
+              label="Framing"
+              value={draft.framing}
+              onValueChange={(v) => set("framing", v as FramingKind)}
+              options={FRAMING.map((f) => ({ value: f.value, label: f.label }))}
+            />
+
+            <div>
+              <label htmlFor="channel-framing-opt" className={labelClass}>
+                Framing option
+              </label>
+              <input
+                id="channel-framing-opt"
+                value={draft.framingOption}
+                onChange={(e) => set("framingOption", e.target.value)}
+                autoComplete="off"
+                className={inputClass}
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {FRAMING_HINT[draft.framing]}
+              </p>
+            </div>
+          </div>
+
+          {error !== null && (
+            <p role="alert" className="mt-3 text-xs text-red-600 dark:text-red-400">
+              {error}
+            </p>
+          )}
+
+          <div className="mt-4 flex justify-end gap-2">
+            <Dialog.Close asChild>
+              <button
+                type="button"
+                className="min-h-9 rounded-[var(--radius)] border border-border bg-card px-4 text-sm hover:bg-muted"
+              >
+                Cancel
+              </button>
+            </Dialog.Close>
+            <button
+              type="button"
+              disabled={!dirty || saving}
+              onClick={() => void handleSubmit()}
+              className="min-h-9 rounded-[var(--radius)] bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {(() => {
+                if (saving) return "Working…";
+                if (initial === null) return "Open";
+                return "Apply & reopen";
+              })()}
+            </button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}

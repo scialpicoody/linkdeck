@@ -1,5 +1,7 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { Toaster, toast } from "sonner";
+import type { ChannelFormValue } from "./components/channels";
+import { ChannelDialog } from "./components/channels";
 import { type Frame, FramePanel } from "./components/frames";
 import { Sidebar } from "./components/layout/Sidebar";
 import { StatusBar } from "./components/layout/StatusBar";
@@ -10,7 +12,7 @@ import { ConfirmDialog } from "./components/ui/ConfirmDialog";
 import { HintsProvider } from "./components/ui/Hint";
 import { useChannels } from "./lib/channels";
 import { isHostAvailable } from "./lib/host";
-import { events, SerialService } from "./mygo";
+import { ConfigAPI, events, type Preset, SerialService } from "./mygo";
 
 // FramePanel is the primary view (sync import: it owns the hot loop).
 // InspectorPanel stays lazy until its slide-over lands (#20).
@@ -43,6 +45,7 @@ export default function App() {
     selectChannel,
     markRead,
     resetCounters,
+    setChannelState,
   } = useChannels();
   const [clock, setClock] = useState("--:--:--");
   // Per-channel TX echo frames. RX frames arrive with the framing phase,
@@ -53,6 +56,36 @@ export default function App() {
   const [outputRows, setOutputRows] = useState<ScriptOutputRow[]>([]);
   const [errorLine, setErrorLine] = useState<number | null>(null);
   const [pendingCloseId, setPendingCloseId] = useState<string | null>(null);
+  // Channel dialog: null = closed; {mode:"create"} or {mode:"edit", id}.
+  const [channelDialog, setChannelDialog] = useState<
+    { mode: "create" } | { mode: "edit"; id: string } | null
+  >(null);
+  const [presets, setPresets] = useState<Record<string, ChannelFormValue>>({});
+
+  // Load named presets once (browser-only mode: none).
+  useEffect(() => {
+    if (!isHostAvailable()) return;
+    ConfigAPI.presets()
+      .then((all: Record<string, Preset>) => {
+        const mapped: Record<string, ChannelFormValue> = {};
+        for (const [name, p] of Object.entries(all)) {
+          mapped[name] = {
+            port: p.Endpoint,
+            baudRate: p.Baud,
+            dataBits: (p.DataBits === 5 || p.DataBits === 6 || p.DataBits === 7
+              ? p.DataBits
+              : 8) as ChannelFormValue["dataBits"],
+            parity: (p.Parity ?? "none") as ChannelFormValue["parity"],
+            stopBits: (p.StopBits ?? "1") as ChannelFormValue["stopBits"],
+            framing: "delimiter",
+            framingOption: "0A",
+            readTimeoutMs: p.ReadTimeoutMs ?? 0,
+          };
+        }
+        setPresets(mapped);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     // Without the Go host there is no tick event; fall back to a local clock
@@ -129,6 +162,57 @@ export default function App() {
     setFramesByChannel((prev) => ({ ...prev, [id]: [] }));
   }, [active]);
 
+  // Unified submit for the channel dialog (#18). Create: open + tab.
+  // Edit: close + reopen; failure keeps the previous (still-open) settings.
+  const handleChannelSubmit = useCallback(
+    async (value: ChannelFormValue) => {
+      if (!isHostAvailable()) throw new Error("No Go host: cannot open channels in browser mode.");
+      const editing = channelDialog !== null && channelDialog.mode === "edit";
+      if (editing) setChannelState(value.port, "connecting");
+      try {
+        if (editing) {
+          try {
+            await SerialService.close(value.port);
+          } catch {
+            // Already closed / never opened: proceed to open.
+          }
+        }
+        await SerialService.open({
+          port: value.port,
+          baudRate: value.baudRate,
+          dataBits: value.dataBits,
+          parity: value.parity,
+          stopBits: value.stopBits,
+          readTimeoutMs: value.readTimeoutMs,
+        });
+        setChannelState(value.port, "connected");
+        openChannel(value.port);
+        selectChannel(value.port);
+      } catch (err) {
+        setChannelState(value.port, "error", err instanceof Error ? err.message : String(err));
+        throw err;
+      }
+    },
+    [channelDialog, openChannel, selectChannel, setChannelState],
+  );
+
+  const dialogPorts = useMemo(() => channels.map((c) => c.name), [channels]);
+  const dialogInitial = useMemo<ChannelFormValue | null>(() => {
+    if (channelDialog === null || channelDialog.mode === "create") return null;
+    const ch = channels.find((c) => c.id === channelDialog.id);
+    if (!ch) return null;
+    return {
+      port: ch.name,
+      baudRate: 115200,
+      dataBits: 8,
+      parity: "none",
+      stopBits: "1",
+      framing: "delimiter",
+      framingOption: "0A",
+      readTimeoutMs: 0,
+    };
+  }, [channelDialog, channels]);
+
   return (
     <HintsProvider>
       <div className="flex h-screen w-full flex-col bg-background text-foreground">
@@ -140,6 +224,8 @@ export default function App() {
             listError={listError}
             onOpen={openChannel}
             onSelect={selectChannel}
+            onAdd={() => setChannelDialog({ mode: "create" })}
+            onEdit={(id) => setChannelDialog({ mode: "edit", id })}
           />
           <div className="flex min-w-0 flex-1 flex-col">
             <TabStrip
@@ -197,6 +283,16 @@ export default function App() {
         </div>
         <StatusBar channel={active} clock={clock} onResetCounters={resetCounters} />
         <Toaster position="bottom-right" theme="system" />
+        <ChannelDialog
+          initial={dialogInitial}
+          ports={dialogPorts}
+          presets={presets}
+          open={channelDialog !== null}
+          onOpenChange={(open) => {
+            if (!open) setChannelDialog(null);
+          }}
+          onSubmit={handleChannelSubmit}
+        />
         <ConfirmDialog
           open={pendingCloseId !== null}
           onOpenChange={(open) => {

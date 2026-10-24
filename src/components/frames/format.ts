@@ -1,13 +1,42 @@
 /**
  * Formatting helpers for the frame table (#17). Pure functions; no I/O.
  *
- * Byte/data conversions reuse the terminal slice's helpers until the old
- * TerminalPanel is removed — single source, no duplicated logic.
+ * Byte/data conversions live here (single source); the old terminal slice
+ * is gone with TerminalPanel.
  */
 
-export { formatBytes, formatTs, frameBytes, toHex } from "../terminal/format";
-
 const encoder = new TextEncoder();
+
+/** Byte length of a frame payload (UTF-8), for flood accounting. */
+export function frameBytes(data: string): number {
+  return encoder.encode(data).length;
+}
+
+/** Render a payload as space-separated lowercase hex pairs (`3c 7b …`). */
+export function toHex(data: string): string {
+  const bytes = encoder.encode(data);
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i] as number;
+    if (i > 0) out += " ";
+    out += b.toString(16).padStart(2, "0");
+  }
+  return out;
+}
+
+/** `HH:MM:SS.mmm` for a frame timestamp (epoch millis). */
+export function formatTs(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number, w = 2) => String(n).padStart(w, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+
+/** Human `N KB` / `N MB` rendering for dropped-byte counters. */
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
 
 /** Number of payload bytes in a frame (UTF-8). */
 export function frameByteLength(data: string): number {
