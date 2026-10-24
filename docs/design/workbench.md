@@ -287,7 +287,9 @@ to make an empty workbench look populated.
 - Transmit dock: `src/components/frames/Composer.tsx`
 - Frame inspection: `src/components/frames/FrameInspector.tsx`
 - Frame ingestion/retention/statistics: `src/lib/frame-ingest.ts`,
-  `src/lib/frame-store.ts`, `src/lib/frame-stats.ts`, `src/lib/frame-view.ts`
+  `src/lib/capture-session.ts`, `src/lib/use-capture-sessions.ts`,
+  `src/lib/frame-store.ts`, `src/lib/frame-stats.ts`, `src/lib/frame-identity.ts`,
+  `src/lib/frame-view.ts`
 - Operations dock sizing: `src/lib/dock-layout.ts`, `src/style.css`
 - Script workspace: `src/components/scripts/`
 - Status bar: `src/components/layout/StatusBar.tsx`

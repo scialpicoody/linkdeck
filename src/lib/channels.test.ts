@@ -3,7 +3,6 @@ import {
   type Channel,
   type ChannelState,
   channelStateFromStatus,
-  channelWithTraffic,
   reconcileChannels,
   stateColor,
 } from "./channels";
@@ -48,9 +47,6 @@ describe("transport reconciliation", () => {
       address: "127.0.0.1:9000",
       framing: { kind: "delimiter", delimiterHex: "0A" },
     },
-    unread: 0,
-    rxBytes: 0,
-    txBytes: 0,
   };
 
   it("maps every transport state into the shared channel model", () => {
@@ -99,7 +95,7 @@ describe("transport reconciliation", () => {
     expect(next[0]?.backendKey).toBe("server");
   });
 
-  it("preserves identity, history, and counters across removal and recovery", () => {
+  it("preserves identity and state across removal and recovery", () => {
     const serial: Channel = {
       ...server,
       id: "serial-1",
@@ -117,15 +113,11 @@ describe("transport reconciliation", () => {
         readTimeoutMs: 0,
         framing: { kind: "delimiter", delimiterHex: "0A" },
       },
-      rxBytes: 42,
-      txBytes: 7,
     };
     const removed = reconcileChannels([serial], []);
     expect(removed[0]).toMatchObject({
       id: "serial-1",
       state: "disconnected",
-      rxBytes: 42,
-      txBytes: 7,
     });
     const recovered = reconcileChannels(removed, [
       {
@@ -138,17 +130,6 @@ describe("transport reconciliation", () => {
         attempts: 0,
       },
     ]);
-    expect(recovered[0]).toMatchObject({ state: "connected", rxBytes: 42, txBytes: 7 });
-  });
-
-  it("counts unread frames even when a complete frame has zero payload bytes", () => {
-    const inbound = channelWithTraffic(
-      { ...server, kind: "serial", config: { ...server.config, transport: "serial" } } as Channel,
-      "in",
-      0,
-      null,
-    );
-    expect(inbound.unread).toBe(1);
-    expect(channelWithTraffic(inbound, "out", 3, null).unread).toBe(1);
+    expect(recovered[0]).toMatchObject({ id: "serial-1", state: "connected" });
   });
 });

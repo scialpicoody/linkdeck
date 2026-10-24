@@ -18,9 +18,6 @@ const channel: Channel = {
     readTimeoutMs: 0,
     framing: { kind: "delimiter", delimiterHex: "0A" },
   },
-  unread: 0,
-  rxBytes: 0,
-  txBytes: 0,
 };
 
 describe("frame event ingestion", () => {
@@ -37,6 +34,8 @@ describe("frame event ingestion", () => {
       "in",
       "out",
     ]);
+    const ids = result.byChannel.get("serial-1")?.frames.map((frame) => frame.id) ?? [];
+    expect(new Set(ids).size).toBe(2);
   });
 
   it("drops malformed and unknown-channel events without phantom state", () => {

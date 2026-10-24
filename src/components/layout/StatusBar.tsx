@@ -1,18 +1,17 @@
 import { ArrowDown, ArrowUp, RotateCcw } from "lucide-react";
+import type { CaptureSession } from "../../lib/capture-session";
 import { type Channel, stateColor } from "../../lib/channels";
-import type { FramingError } from "../../mygo";
 import { Hint } from "../ui/Hint";
 
 interface StatusBarProps {
   channel: Channel | null;
+  capture?: CaptureSession;
   onResetCounters: (id: string) => void;
-  /** Frames dropped by outbound-queue backpressure (per channel). */
-  dropped?: number;
-  /** Latest cumulative framing failure for the active channel. */
-  framingError?: FramingError;
 }
 
-export function StatusBar({ channel, onResetCounters, dropped = 0, framingError }: StatusBarProps) {
+export function StatusBar({ channel, capture, onResetCounters }: StatusBarProps) {
+  const dropped = capture?.dropped ?? 0;
+  const framingError = capture?.framingError;
   const framingErrorCount = framingError
     ? framingError.oversize + framingError.checksum + framingError.other
     : 0;
@@ -47,11 +46,11 @@ export function StatusBar({ channel, onResetCounters, dropped = 0, framingError 
             >
               <span className="flex items-center gap-1">
                 <ArrowDown size={9} aria-hidden="true" />
-                {channel.rxBytes} B
+                {capture?.rxBytes ?? 0} B
               </span>
               <span className="flex items-center gap-1">
                 <ArrowUp size={9} aria-hidden="true" />
-                {channel.txBytes} B
+                {capture?.txBytes ?? 0} B
               </span>
               <RotateCcw
                 size={9}

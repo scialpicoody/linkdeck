@@ -1,6 +1,7 @@
 import { base64ToBytes, type Frame } from "../components/frames";
 import type { FrameDTO } from "../mygo";
 import type { Channel } from "./channels";
+import { createFrame } from "./frame-identity";
 
 export interface IngestedFrames {
   byChannel: Map<string, { endpoint: string; frames: Frame[] }>;
@@ -20,11 +21,11 @@ export function decodeFrameBatch(batch: FrameDTO[], channels: Channel[]): Ingest
     const channel = byBackendKey.get(dto.channel);
     if (channel === undefined) continue;
     try {
-      const frame: Frame = {
+      const frame: Frame = createFrame({
         dir: dto.dir === "rx" ? "in" : "out",
         payload: base64ToBytes(dto.payload),
         ts: dto.tsMillis,
-      };
+      });
       const entry = byChannel.get(channel.id) ?? { endpoint: channel.backendKey, frames: [] };
       entry.frames.push(frame);
       byChannel.set(channel.id, entry);

@@ -47,6 +47,7 @@ import {
   ScriptRunControls,
 } from "./components/scripts";
 import { HintsProvider } from "./components/ui/Hint";
+import { EMPTY_CAPTURE_SESSION } from "./lib/capture-session";
 import {
   type Channel,
   type ChannelConfig,
@@ -65,16 +66,8 @@ import {
   widthFromKey,
   widthFromPointer,
 } from "./lib/dock-layout";
-import { decodeFrameBatch } from "./lib/frame-ingest";
-import {
-  type ChannelStats,
-  EMPTY_CHANNEL_STATS,
-  recordFrames,
-  recordSendError,
-  sessionErrors,
-  throughputSeries,
-} from "./lib/frame-stats";
-import { appendFrames, EMPTY_FRAME_BUFFER, type FrameBuffer } from "./lib/frame-store";
+import { createFrame } from "./lib/frame-identity";
+import { sessionErrors, throughputSeries } from "./lib/frame-stats";
 import { isHostAvailable } from "./lib/host";
 import { appendScriptOutput, outputForScript, scriptOutputFromHost } from "./lib/script-output";
 import {
@@ -85,12 +78,11 @@ import {
   type ScriptTab,
   tabFromDocument,
 } from "./lib/script-workspace";
+import { useCaptureSessions } from "./lib/use-capture-sessions";
 import { cn } from "./lib/utils";
 import {
   ConfigAPI,
   events,
-  type FrameDTO,
-  type FramingError,
   type OutputRow as HostScriptOutputRow,
   type OpenRequest,
   type Preset,
@@ -98,7 +90,6 @@ import {
   ScriptAPI,
   SerialService,
   type SessionInfo,
-  StreamAPI,
   TcpService,
   type TransportStatus,
   WorkspaceAPI,
@@ -327,25 +318,24 @@ export default function App() {
     portsLoading,
     listError,
     selectChannel,
-    markRead,
-    resetCounters,
     addChannel,
     updateChannel,
     removeChannel,
-    addTraffic,
     applyTransportStatus,
   } = useChannels();
-  const [framesByChannel, setFramesByChannel] = useState<Record<string, FrameBuffer>>({});
-  const [statsByChannel, setStatsByChannel] = useState<Record<string, ChannelStats>>({});
+  const {
+    captures,
+    activeCapture,
+    markRead,
+    clearFrames,
+    resetCounters,
+    remove: removeCaptures,
+    recordSent,
+    recordFailedSend,
+  } = useCaptureSessions(channels, activeId);
   const [statsClock, setStatsClock] = useState(() => Date.now());
-  const [droppedByChannel, setDroppedByChannel] = useState<Record<string, number>>({});
-  const [framingErrorsByChannel, setFramingErrorsByChannel] = useState<
-    Record<string, FramingError>
-  >({});
-  // Selected frame row → slide-over inspector (#20). Cleared on channel switch.
-  const [frameSelection, setFrameSelection] = useState<{ frame: Frame; index: number } | null>(
-    null,
-  );
+  // Selected Frame → slide-over inspector (#20). Cleared on channel switch.
+  const [frameSelection, setFrameSelection] = useState<Frame | null>(null);
   const [mainView, setMainView] = useState<MainView>("monitor");
   const [dockTab, setDockTab] = useState<"send" | "inspect">("send");
   const [dockWidth, setDockWidth] = useState(() => {
@@ -528,58 +518,6 @@ export default function App() {
     }
   }, [listError]);
 
-  // Live RX path: Go emits unmatched complete frames as base64 FrameDTOs.
-  useEffect(() => {
-    if (!isHostAvailable()) return;
-    return events.frames.on((batch: FrameDTO[]) => {
-      const { byChannel, malformed } = decodeFrameBatch(batch, channels);
-
-      if (malformed > 0) {
-        toast.error("Dropped malformed frame event", {
-          description: `${malformed} payload${malformed === 1 ? "" : "s"} were not valid base64.`,
-        });
-      }
-      if (byChannel.size === 0) return;
-
-      setFramesByChannel((previous) => {
-        const next = { ...previous };
-        for (const [id, entry] of byChannel) {
-          next[id] = appendFrames(previous[id] ?? EMPTY_FRAME_BUFFER, entry.frames);
-        }
-        return next;
-      });
-      setStatsByChannel((previous) => {
-        const next = { ...previous };
-        for (const [id, entry] of byChannel) {
-          next[id] = recordFrames(previous[id] ?? EMPTY_CHANNEL_STATS, entry.frames);
-        }
-        return next;
-      });
-
-      for (const [id, { endpoint, frames }] of byChannel) {
-        for (const frame of frames) addTraffic(id, frame.dir, frame.payload.length);
-        void StreamAPI.dropped(endpoint)
-          .then((dropped) => {
-            setDroppedByChannel((previous) =>
-              previous[id] === dropped ? previous : { ...previous, [id]: dropped },
-            );
-          })
-          .catch(() => {});
-      }
-    });
-  }, [addTraffic, channels]);
-
-  // Framing failures are cumulative and non-fatal; keep the latest status
-  // visible without turning a noisy stream into a toast flood.
-  useEffect(() => {
-    if (!isHostAvailable()) return;
-    return events.streamErrors.on((error: FramingError) => {
-      const channel = channels.find((item) => item.backendKey === error.channel);
-      if (channel === undefined) return;
-      setFramingErrorsByChannel((previous) => ({ ...previous, [channel.id]: error }));
-    });
-  }, [channels]);
-
   useEffect(() => {
     if (!isHostAvailable()) return;
     return events.channelStatus.on((statuses: TransportStatus[]) => {
@@ -614,39 +552,25 @@ export default function App() {
         const message = e instanceof Error ? e.message : String(e);
         // TX failure: red row in the frame table (not the script output) +
         // inline composer error + toast. No dependency on Output visibility.
-        setFramesByChannel((prev) => ({
-          ...prev,
-          [id]: appendFrames(prev[id] ?? EMPTY_FRAME_BUFFER, [
-            {
-              dir: "out",
-              payload: new Uint8Array(),
-              ts: Date.now(),
-              error: `Send failed: ${message}`,
-            },
-          ]),
-        }));
-        setStatsByChannel((previous) => ({
-          ...previous,
-          [id]: recordSendError(previous[id] ?? EMPTY_CHANNEL_STATS),
-        }));
+        recordFailedSend(
+          id,
+          createFrame({
+            dir: "out",
+            payload: new Uint8Array(),
+            ts: Date.now(),
+            error: `Send failed: ${message}`,
+          }),
+        );
         setSendError(message);
         toast.error(`Send to ${target} failed`, { description: message });
         return;
       } finally {
         setSending(false);
       }
-      addTraffic(id, "out", bytes.length);
-      const sentFrame: Frame = { dir: "out", payload: bytes, ts: Date.now() };
-      setFramesByChannel((prev) => ({
-        ...prev,
-        [id]: appendFrames(prev[id] ?? EMPTY_FRAME_BUFFER, [sentFrame]),
-      }));
-      setStatsByChannel((previous) => ({
-        ...previous,
-        [id]: recordFrames(previous[id] ?? EMPTY_CHANNEL_STATS, [sentFrame]),
-      }));
+      const sentFrame = createFrame({ dir: "out", payload: bytes, ts: Date.now() });
+      recordSent(id, sentFrame);
     },
-    [active, addTraffic],
+    [active, recordFailedSend, recordSent],
   );
 
   const rememberRun = useCallback((info: RunInfo) => {
@@ -876,44 +800,16 @@ export default function App() {
 
   const handleClear = useCallback(() => {
     if (active === null) return;
-    const id = active.id;
-    setFramesByChannel((prev) => ({ ...prev, [id]: EMPTY_FRAME_BUFFER }));
+    clearFrames(active.id);
     setFrameSelection(null);
-  }, [active]);
-
-  const handleResetCounters = useCallback(
-    (id: string) => {
-      resetCounters(id);
-      setStatsByChannel((previous) => ({ ...previous, [id]: EMPTY_CHANNEL_STATS }));
-    },
-    [resetCounters],
-  );
+  }, [active, clearFrames]);
 
   const removeChannelArtifacts = useCallback(
     (ids: string[]) => {
       for (const id of ids) removeChannel(id);
-      setFramesByChannel((previous) => {
-        const next = { ...previous };
-        for (const id of ids) delete next[id];
-        return next;
-      });
-      setDroppedByChannel((previous) => {
-        const next = { ...previous };
-        for (const id of ids) delete next[id];
-        return next;
-      });
-      setFramingErrorsByChannel((previous) => {
-        const next = { ...previous };
-        for (const id of ids) delete next[id];
-        return next;
-      });
-      setStatsByChannel((previous) => {
-        const next = { ...previous };
-        for (const id of ids) delete next[id];
-        return next;
-      });
+      removeCaptures(ids);
     },
-    [removeChannel],
+    [removeCaptures, removeChannel],
   );
 
   // Create adds a channel only after the backend accepts the connection.
@@ -1099,11 +995,9 @@ export default function App() {
     if (!ch) return null;
     return formFromChannel(ch);
   }, [channelDialog, channels]);
-  const activeStats =
-    active === null ? EMPTY_CHANNEL_STATS : (statsByChannel[active.id] ?? EMPTY_CHANNEL_STATS);
+  const activeStats = activeCapture?.stats ?? EMPTY_CAPTURE_SESSION.stats;
   const activeThroughput = throughputSeries(activeStats, statsClock);
-  const activeDropped = active === null ? 0 : (droppedByChannel[active.id] ?? 0);
-  const activeFramingError = active === null ? undefined : framingErrorsByChannel[active.id];
+  const activeFramingError = activeCapture?.framingError;
   const activeFramingCount = activeFramingError
     ? activeFramingError.oversize + activeFramingError.checksum + activeFramingError.other
     : 0;
@@ -1161,6 +1055,7 @@ export default function App() {
           {mainView === "monitor" && (
             <Sidebar
               channels={channels}
+              captures={captures}
               activeId={activeId}
               loading={portsLoading}
               listError={listError}
@@ -1176,11 +1071,10 @@ export default function App() {
               <div className="flex min-h-0 min-w-0 flex-1 flex-col xl:flex-row">
                 <FramePanel
                   channelName={active?.name ?? null}
-                  frames={
-                    active !== null ? (framesByChannel[active.id] ?? EMPTY_FRAME_BUFFER).frames : []
-                  }
-                  onSelectFrame={(frame, index) => {
-                    setFrameSelection({ frame, index });
+                  frames={activeCapture?.frames.frames ?? []}
+                  selectedFrame={frameSelection}
+                  onSelectFrame={(frame) => {
+                    setFrameSelection(frame);
                     setDockTab("inspect");
                   }}
                   onClear={handleClear}
@@ -1276,7 +1170,7 @@ export default function App() {
                     <FrameInspector
                       selection={
                         frameSelection !== null && active !== null
-                          ? { frame: frameSelection.frame, channelName: active.name }
+                          ? { frame: frameSelection, channelName: active.name }
                           : null
                       }
                       onClose={() => setFrameSelection(null)}
@@ -1286,7 +1180,11 @@ export default function App() {
                           : {
                               frames: activeStats.frames,
                               bytes: activeStats.bytes,
-                              errors: sessionErrors(activeStats, activeFramingCount, activeDropped),
+                              errors: sessionErrors(
+                                activeStats,
+                                activeFramingCount,
+                                activeCapture?.dropped ?? 0,
+                              ),
                               rx: activeThroughput.rx,
                               tx: activeThroughput.tx,
                             }
@@ -1502,9 +1400,8 @@ export default function App() {
 
         <StatusBar
           channel={active}
-          onResetCounters={handleResetCounters}
-          dropped={activeDropped}
-          framingError={activeFramingError}
+          capture={activeCapture ?? undefined}
+          onResetCounters={resetCounters}
         />
         <Toaster position="bottom-right" theme="system" />
         <CreateScriptDialog

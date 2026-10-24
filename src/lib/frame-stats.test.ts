@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Frame } from "../components/frames/types";
+import { createFrame } from "./frame-identity";
 import {
   EMPTY_CHANNEL_STATS,
   recordFrames,
@@ -9,7 +10,7 @@ import {
 } from "./frame-stats";
 
 function frame(ts: number, size: number, dir: "in" | "out"): Frame {
-  return { ts, dir, payload: new Uint8Array(size) };
+  return createFrame({ ts, dir, payload: new Uint8Array(size) });
 }
 
 describe("frame session statistics", () => {

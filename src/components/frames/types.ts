@@ -5,6 +5,8 @@ type FrameDirection = "in" | "out";
 
 /** One captured chunk of channel traffic. `ts` is epoch millis. */
 export interface Frame {
+  /** Stable local identity; never derived from the Frame's array position. */
+  readonly id: string;
   dir: FrameDirection;
   /** Raw frame bytes. Never decode this for storage; codecs are view-only. */
   payload: Uint8Array;
@@ -86,8 +88,10 @@ export interface FramePanelProps {
   channelName: string | null;
   /** Full frame history for the channel; the panel renders the tail. */
   frames: Frame[];
+  /** The Frame selected in the inspector, or null when selection is clear. */
+  selectedFrame?: Frame | null;
   /** Row click; the owner wires it to the inspector slide-over (ticket #20). */
-  onSelectFrame?: (frame: Frame, index: number) => void;
+  onSelectFrame?: (frame: Frame) => void;
   /** Clear history for this channel. */
   onClear?: () => void;
 }

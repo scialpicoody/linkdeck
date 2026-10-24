@@ -10,11 +10,11 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { visibleFrameEntries } from "../../lib/frame-view";
+import { visibleFrames } from "../../lib/frame-view";
 import { cn } from "../../lib/utils";
 import { Hint } from "../ui/Hint";
 import { asciiPreview, formatTs, frameByteLength, hexPreview } from "./format";
-import type { DirectionFilter, FrameCodec, FramePanelProps } from "./types";
+import type { DirectionFilter, Frame, FrameCodec, FramePanelProps } from "./types";
 
 const ROW_GRID =
   "grid-cols-[88px_44px_44px_minmax(0,1fr)] sm:grid-cols-[100px_48px_52px_minmax(0,1fr)]";
@@ -26,40 +26,33 @@ const ROW_GRID =
 export default function FramePanel({
   channelName,
   frames,
+  selectedFrame = null,
   onSelectFrame,
   onClear,
 }: FramePanelProps) {
-  const [pausedAt, setPausedAt] = useState<number | null>(null);
+  const [pausedFrames, setPausedFrames] = useState<Frame[] | null>(null);
   const [follow, setFollow] = useState(true);
   const [codec, setCodec] = useState<FrameCodec>("ascii");
   const [dirFilter, setDirFilter] = useState<DirectionFilter>("all");
   const [query, setQuery] = useState("");
-  const [selected, setSelected] = useState<number | null>(null);
   const endRef = useRef<HTMLLIElement>(null);
 
-  // Channel switches start with a live, unselected view.
+  // Channel switches start with a live view; selection is owned by App.
   // biome-ignore lint/correctness/useExhaustiveDependencies: channelName is the intentional reset trigger.
   useEffect(() => {
-    setPausedAt(null);
-    setSelected(null);
+    setPausedFrames(null);
   }, [channelName]);
 
   const visible = useMemo(
-    () => visibleFrameEntries(frames, { pausedAt, follow, dirFilter, query }),
-    [frames, pausedAt, follow, dirFilter, query],
+    () => visibleFrames(frames, { snapshot: pausedFrames, follow, dirFilter, query }),
+    [frames, pausedFrames, follow, dirFilter, query],
   );
-  const paused = pausedAt !== null;
+  const paused = pausedFrames !== null;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new visible tail is the scroll trigger.
   useEffect(() => {
     if (follow && !paused) endRef.current?.scrollIntoView({ block: "end" });
   }, [visible.length, follow, paused]);
-
-  function handleSelect(index: number) {
-    setSelected(index);
-    const frame = frames[index];
-    if (frame) onSelectFrame?.(frame, index);
-  }
 
   return (
     <section
@@ -140,7 +133,7 @@ export default function FramePanel({
             <button
               type="button"
               aria-pressed={paused}
-              onClick={() => setPausedAt((value) => (value === null ? frames.length : null))}
+              onClick={() => setPausedFrames((current) => (current === null ? visible : null))}
               aria-label={paused ? "Resume rendering" : "Pause rendering"}
               className={cn(
                 "grid size-7 place-items-center border border-transparent text-muted-foreground hover:border-border hover:bg-card hover:text-foreground",
@@ -168,7 +161,7 @@ export default function FramePanel({
             <button
               type="button"
               onClick={() => {
-                setSelected(null);
+                setPausedFrames(null);
                 onClear?.();
               }}
               aria-label="Clear captured frames"
@@ -228,14 +221,14 @@ export default function FramePanel({
             </div>
           </li>
         ) : (
-          visible.map(({ frame, index }) => {
-            const selectedRow = selected === index;
+          visible.map((frame) => {
+            const selectedRow = selectedFrame === frame;
             const inbound = frame.dir === "in";
             return (
-              <li key={`${frame.ts}-${index}`}>
+              <li key={frame.id}>
                 <button
                   type="button"
-                  onClick={() => handleSelect(index)}
+                  onClick={() => onSelectFrame?.(frame)}
                   aria-current={selectedRow ? "true" : undefined}
                   className={cn(
                     "grid w-full items-center gap-2 border-b border-border/55 px-3 py-[7px] text-left transition-colors",

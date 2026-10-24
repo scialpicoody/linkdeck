@@ -10,11 +10,13 @@ import {
   Unplug,
 } from "lucide-react";
 import { useState } from "react";
+import type { CaptureSessions } from "../../lib/capture-session";
 import { type Channel, stateColor } from "../../lib/channels";
 import { cn } from "../../lib/utils";
 
 interface SidebarProps {
   channels: Channel[];
+  captures: CaptureSessions;
   activeId: string | null;
   loading: boolean;
   listError: string | null;
@@ -33,6 +35,7 @@ function ChannelIcon({ kind }: { kind: Channel["kind"] }) {
 
 export function Sidebar({
   channels,
+  captures,
   activeId,
   loading,
   listError,
@@ -131,6 +134,7 @@ export function Sidebar({
           <ul className="space-y-0.5">
             {channels.map((channel) => {
               const active = channel.id === activeId;
+              const capture = captures[channel.id];
               return (
                 <li key={channel.id} className="group relative">
                   <button
@@ -172,12 +176,12 @@ export function Sidebar({
                         <span className="mt-0.5 flex items-center justify-between gap-2 font-mono text-[8px] text-muted-foreground uppercase">
                           <span className="truncate">{channel.state}</span>
                           <span className="flex items-center gap-1">
-                            {channel.unread > 0 && (
+                            {(capture?.unread ?? 0) > 0 && (
                               <span className="text-primary">
-                                {channel.unread > 99 ? "99+" : channel.unread}
+                                {(capture?.unread ?? 0) > 99 ? "99+" : capture?.unread}
                               </span>
                             )}
-                            <span>{channel.rxBytes + channel.txBytes} B</span>
+                            <span>{(capture?.rxBytes ?? 0) + (capture?.txBytes ?? 0)} B</span>
                           </span>
                         </span>
                       </span>

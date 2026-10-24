@@ -98,11 +98,6 @@ export interface Channel {
   backendKey: string;
   /** Last successful transport configuration retained for reconnect/edit. */
   config: ChannelConfig;
-  /** Unread inbound-frame count shown in the channel rail. */
-  unread: number;
-  /** Cumulative counters; reset via resetCounters. */
-  rxBytes: number;
-  txBytes: number;
   /** Last transport-level error, if state is "error". */
   error?: string;
 }
@@ -117,8 +112,6 @@ export interface UseChannels {
   portsLoading: boolean;
   listError: string | null;
   selectChannel: (id: string) => void;
-  markRead: (id: string) => void;
-  resetCounters: (id: string) => void;
   addChannel: (channel: NewChannel, activate?: boolean) => void;
   updateChannel: (
     id: string,
@@ -127,9 +120,6 @@ export interface UseChannels {
     >,
   ) => void;
   removeChannel: (id: string) => void;
-  /** Record decoded frame bytes and update state/unread counters. */
-  addTraffic: (id: string, dir: "in" | "out", bytes: number) => void;
-  setChannelState: (id: string, state: ChannelState, error?: string) => void;
   applyTransportStatus: (statuses: TransportStatus[]) => void;
 }
 
@@ -218,31 +208,10 @@ export function reconcileChannels(
         parentKey: parent.backendKey,
         framing: parent.config.framing,
       },
-      unread: 0,
-      rxBytes: 0,
-      txBytes: 0,
     });
     known.add(status.key);
   }
   return next;
-}
-
-/** Apply one decoded frame's counters and unread semantics. */
-export function channelWithTraffic(
-  channel: Channel,
-  dir: "in" | "out",
-  bytes: number,
-  activeId: string | null,
-): Channel {
-  if (bytes < 0) return channel;
-  return {
-    ...channel,
-    state: channel.state === "error" ? channel.state : "connected",
-    error: dir === "in" ? undefined : channel.error,
-    rxBytes: channel.rxBytes + (dir === "in" ? bytes : 0),
-    txBytes: channel.txBytes + (dir === "out" ? bytes : 0),
-    unread: dir === "in" && channel.id !== activeId ? channel.unread + 1 : channel.unread,
-  };
 }
 
 /**
@@ -315,18 +284,10 @@ export function useChannels(pollMs = 3000): UseChannels {
     setActiveId(id);
   }, []);
 
-  const markRead = useCallback((id: string) => {
-    setChannels((prev) => prev.map((c) => (c.id === id ? { ...c, unread: 0 } : c)));
-  }, []);
-
-  const resetCounters = useCallback((id: string) => {
-    setChannels((prev) => prev.map((c) => (c.id === id ? { ...c, rxBytes: 0, txBytes: 0 } : c)));
-  }, []);
-
   const addChannel = useCallback((channel: NewChannel, activate = true) => {
     setChannels((prev) => [
       ...prev.filter((existing) => existing.id !== channel.id),
-      { ...channel, unread: 0, rxBytes: 0, txBytes: 0 },
+      { ...channel },
     ]);
     if (activate) setActiveId(channel.id);
   }, []);
@@ -340,22 +301,6 @@ export function useChannels(pollMs = 3000): UseChannels {
   const removeChannel = useCallback((id: string) => {
     setChannels((prev) => prev.filter((channel) => channel.id !== id));
     setActiveId((current) => (current === id ? null : current));
-  }, []);
-
-  const addTraffic = useCallback(
-    (id: string, dir: "in" | "out", bytes: number) => {
-      if (bytes < 0) return;
-      setChannels((prev) =>
-        prev.map((channel) =>
-          channel.id === id ? channelWithTraffic(channel, dir, bytes, activeId) : channel,
-        ),
-      );
-    },
-    [activeId],
-  );
-
-  const setChannelState = useCallback((id: string, state: ChannelState, error?: string) => {
-    setChannels((prev) => prev.map((c) => (c.id === id ? { ...c, state, error } : c)));
   }, []);
 
   const applyTransportStatus = useCallback((statuses: TransportStatus[]) => {
@@ -372,13 +317,9 @@ export function useChannels(pollMs = 3000): UseChannels {
     portsLoading,
     listError,
     selectChannel,
-    markRead,
-    resetCounters,
     addChannel,
     updateChannel,
     removeChannel,
-    addTraffic,
-    setChannelState,
     applyTransportStatus,
   };
 }

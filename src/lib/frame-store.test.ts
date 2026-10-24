@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { Frame } from "../components/frames/types";
+import { createFrame } from "./frame-identity";
 import { appendFrames } from "./frame-store";
 
 function frame(payload: number[], ts: number): Frame {
-  return { dir: "in", payload: new Uint8Array(payload), ts };
+  return createFrame({ dir: "in", payload: new Uint8Array(payload), ts });
 }
 
 describe("appendFrames", () => {
