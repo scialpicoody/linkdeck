@@ -1,6 +1,7 @@
 package script
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -148,6 +149,53 @@ func TestAwaitTimeout(t *testing.T) {
 	}
 	if got := p.Pending(); got != 0 {
 		t.Fatalf("pending=%d after timeout, want 0", got)
+	}
+}
+
+func TestChannelScopedRegistration(t *testing.T) {
+	p := NewPool()
+	defer p.Close()
+	reg, err := p.RegisterOn("serial-a", "OK", ModePrefix, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Feed(NewRxFrame("serial-b", []byte("OK"))) {
+		t.Fatal("a frame from another channel must not consume the registration")
+	}
+	if p.Feed(NewRxFrame("serial-a", []byte("OK"))) {
+		frame, err := p.Await(reg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if frame.Channel != "serial-a" {
+			t.Fatalf("matched channel=%q, want serial-a", frame.Channel)
+		}
+		return
+	}
+	t.Fatal("the scoped frame did not match")
+}
+
+func TestAwaitContextCancellationRemovesRegistration(t *testing.T) {
+	p := NewPool()
+	defer p.Close()
+	reg := mustRegister(t, p, "NEVER", ModePrefix, 5000)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.AwaitContext(ctx, reg)
+		done <- err
+	}()
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("AwaitContext: got %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("AwaitContext did not unblock on cancellation")
+	}
+	if got := p.Pending(); got != 0 {
+		t.Fatalf("pending=%d after cancellation, want 0", got)
 	}
 }
 

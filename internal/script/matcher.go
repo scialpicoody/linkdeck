@@ -2,6 +2,7 @@ package script
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"regexp"
 	"sync"
@@ -45,6 +46,7 @@ func ParseMatchMode(s string) (MatchMode, error) {
 // via Pool.Feed/Pool.Await; direct construction is not needed.
 type Registration struct {
 	id       uint64
+	channel  string
 	pattern  string
 	mode     MatchMode
 	re       *regexp.Regexp
@@ -69,6 +71,10 @@ func (r *Registration) Matches(payload []byte) bool {
 	}
 }
 
+func (r *Registration) accepts(frame Frame) bool {
+	return (r.channel == "" || r.channel == frame.Channel) && r.Matches(frame.Payload)
+}
+
 // compilePattern validates pattern for mode, returning the compiled regex
 // for ModeRegex. Prefix needs no compilation; Lua patterns are probed with
 // a one-byte input so malformed expressions fail here instead of silently
@@ -89,6 +95,17 @@ func compilePattern(pattern string, mode MatchMode) (*regexp.Regexp, error) {
 	default:
 		return nil, nil
 	}
+}
+
+// ValidatePattern eagerly checks a matcher without registering it or
+// consuming a backlog frame. Callers that preflight larger programs use this
+// so invalid expectations fail before any side effects occur.
+func ValidatePattern(pattern string, mode MatchMode) error {
+	if _, err := ParseMatchMode(string(mode)); err != nil {
+		return err
+	}
+	_, err := compilePattern(pattern, mode)
+	return err
 }
 
 // validate compiles the pattern eagerly so bad expressions fail at
@@ -163,10 +180,23 @@ func (p *Pool) SetMaxBacklog(n int) {
 // delivered straight into the registration, so the caller's Await returns
 // immediately. timeoutMs <= 0 means backlog-scan only (no waiting).
 func (p *Pool) Register(pattern string, mode MatchMode, timeoutMs int) (*Registration, error) {
+	return p.RegisterOn("", pattern, mode, timeoutMs)
+}
+
+// RegisterOn adds an expectation scoped to channel. Empty channel preserves
+// the global behavior of Register. A matching frame from another channel can
+// never consume this registration.
+func (p *Pool) RegisterOn(
+	channel string,
+	pattern string,
+	mode MatchMode,
+	timeoutMs int,
+) (*Registration, error) {
 	if _, err := ParseMatchMode(string(mode)); err != nil {
 		return nil, err
 	}
 	reg := &Registration{
+		channel:  channel,
 		pattern:  pattern,
 		mode:     mode,
 		deadline: time.Now().Add(time.Duration(timeoutMs) * time.Millisecond),
@@ -180,7 +210,7 @@ func (p *Pool) Register(pattern string, mode MatchMode, timeoutMs int) (*Registr
 	p.nextID++
 	reg.id = p.nextID
 	for i, f := range p.backlog {
-		if reg.Matches(f.Payload) {
+		if reg.accepts(f) {
 			p.backlog = append(p.backlog[:i:i], p.backlog[i+1:]...)
 			reg.ch <- f
 			reg.fired.Store(true)
@@ -201,7 +231,7 @@ func (p *Pool) Feed(frame Frame) bool {
 		if reg.fired.Load() {
 			continue
 		}
-		if reg.Matches(frame.Payload) {
+		if reg.accepts(frame) {
 			p.regs = append(p.regs[:i:i], p.regs[i+1:]...)
 			reg.fired.Store(true)
 			reg.ch <- frame
@@ -225,6 +255,13 @@ func (p *Pool) Feed(frame Frame) bool {
 // passes (ErrTimeout), or the pool closes (ErrClosed). A backlog hit at
 // Register resolves on the first call.
 func (p *Pool) Await(reg *Registration) (Frame, error) {
+	return p.AwaitContext(context.Background(), reg)
+}
+
+// AwaitContext blocks until the registration resolves, expires, the pool
+// closes, or ctx is cancelled. Cancellation removes a pending registration
+// immediately and returns ctx.Err().
+func (p *Pool) AwaitContext(ctx context.Context, reg *Registration) (Frame, error) {
 	var timer *time.Timer
 	var timerCh <-chan time.Time
 	if wait := time.Until(reg.deadline); wait > 0 {
@@ -239,6 +276,9 @@ func (p *Pool) Await(reg *Registration) (Frame, error) {
 	select {
 	case f := <-reg.ch:
 		return f, nil
+	case <-ctx.Done():
+		p.cancel(reg)
+		return Frame{}, ctx.Err()
 	case <-timerCh:
 		select {
 		case f := <-reg.ch:

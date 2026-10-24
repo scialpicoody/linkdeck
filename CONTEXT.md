@@ -10,3 +10,6 @@ Ubiquitous language for LinkDeck. Glossary only; no implementation details.
 - **Framing**: the layer that turns transport byte streams into frames. Handles half frames, sticky frames, oversize caps, and checksum failures.
 - **Matcher**: a registered expectation (pattern plus timeout) waiting for a frame. `send_expect` registers one and then sends; `expect` only registers. First registered, first matched.
 - **Codec**: byte-level value conversion (Hex, ASCII, JSON). Works above the byte layer; never participates in framing.
+- **Command**: a named outbound payload with codec and line-ending settings.
+- **Sequence**: an ordered program of send, delay, expect, and assertion steps.
+- **Automation Run**: one immutable execution of a Sequence against one Channel.

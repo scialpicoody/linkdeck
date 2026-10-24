@@ -29,4 +29,6 @@
 // registration order; unmatched frames are kept in a capped backlog and
 // routed to the unmatched handler (CLI output by default). A background
 // sweep expires timed-out registrations even when nobody is awaiting them.
+// RegisterOn scopes an expectation to one Channel for concurrent automation,
+// and AwaitContext removes pending registrations immediately on cancellation.
 package script
