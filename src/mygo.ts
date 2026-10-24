@@ -4,6 +4,62 @@ import { call, event } from "mygo-runtime";
 
 // ---- Types ----
 
+/**
+ * ChannelInfo is the List element: every client, server, and accepted
+ * server connection in one JSON-friendly row.
+ */
+export interface ChannelInfo {
+  name: string;
+  /** "tcp-client" | "tcp-server" | "tcp-conn" */
+  kind: string;
+  address: string;
+  state?: ConnState;
+}
+
+/** ConnInfo describes one client channel. */
+export interface ConnInfo {
+  name: string;
+  address: string;
+  state: ConnState;
+}
+
+/**
+ * ConnState is the client status machine. States:
+ *
+ * 	connecting    — initial dial in progress.
+ * 	connected     — live connection.
+ * 	reconnecting  — dial failed or the connection dropped; retrying in the
+ * 	                background with exponential backoff + jitter.
+ * 	closed        — Close called, or retries exhausted. Terminal.
+ */
+export type ConnState = "connecting" | "connected" | "reconnecting" | "closed";
+
+export interface FrameDTO {
+  channel: string;
+  dir: string;
+  payload: string;
+  tsMillis: number;
+}
+
+export interface FramingConfig {
+  Name: string;
+  Opts: Record<string, string>;
+}
+
+/** ListenInfo describes a bound server. */
+export interface ListenInfo {
+  name: string;
+  address: string;
+}
+
+/** ListenRequest asks the service to start a listen server. */
+export interface ListenRequest {
+  name: string;
+  address: string;
+}
+
+export interface Manager {}
+
 /** ModemStatus carries the modem input status bits of a serial port. */
 export interface ModemStatus {
   cts: boolean;
@@ -45,6 +101,25 @@ export interface PortInfo {
   product?: string;
 }
 
+export interface Preset {
+  Transport: string;
+  Endpoint: string;
+  Baud: number;
+  DataBits: number;
+  Parity: string;
+  StopBits: string;
+  Framing: FramingConfig;
+  ReadTimeoutMs: number;
+  Reconnect: ReconnectConfig;
+}
+
+export interface ReconnectConfig {
+  Enabled: boolean;
+  InitialMs: number;
+  MaxMs: number;
+  MaxAttempts: number;
+}
+
 /** StopBits is a JSON-friendly stop-bits setting. */
 export type StopBits = "1" | "1.5" | "2";
 
@@ -53,6 +128,27 @@ export interface SystemInfo {
   os: string;
   arch: string;
   goVersion: string;
+}
+
+/**
+ * OpenRequest asks the service to dial a TCP client. JSON-friendly for a
+ * future mygo.Bind (NOT bound in main.go; the integrator owns binding).
+ *
+ * MaxRetries caps reconnect attempts after the initial dial: 0 (default)
+ * retries forever. BaseBackoffMs/MaxBackoffMs tune the capped exponential
+ * backoff (defaults 100/5000); ConnectTimeoutMs bounds each dial (default
+ * 5000). HeartbeatMs <= 0 (default) disables the heartbeat; otherwise the
+ * client sends HeartbeatPayload (base64 over bindings) every HeartbeatMs.
+ */
+export interface TcpOpenRequest {
+  name: string;
+  address: string;
+  connectTimeoutMs: number;
+  maxRetries: number;
+  baseBackoffMs: number;
+  maxBackoffMs: number;
+  heartbeatMs: number;
+  heartbeatPayload: string;
 }
 
 // ---- Services ----
@@ -78,6 +174,14 @@ export const Greeter = {
  * method is safe for concurrent calls from any goroutine.
  */
 export const SerialService = {
+  /**
+   * AttachStream connects the RX stream manager (ticket #11). When attached,
+   * Open starts a per-port read loop and Close stops it. A nil manager
+   * detaches. NOT bound in main.go; the integrator owns binding.
+   */
+  attachStream(m: Manager | null): Promise<void> {
+    return call("SerialService.AttachStream", m);
+  },
   /**
    * Close shuts the named port; closing an unknown port is an error, closing
    * twice is not (Close is idempotent, like Port.Close).
@@ -117,10 +221,127 @@ export const SerialService = {
   },
 } as const;
 
+/**
+ * TcpService owns dial clients and listen servers by name, mirroring the
+ * SerialService shape (list/open/close/send/recv/status) plus
+ * listen/accept for servers. Every method is safe for concurrent calls.
+ * It is deliberately NOT bound in main.go.
+ */
+export const TcpService = {
+  /**
+   * Accept returns the next accepted-connection id on the named server.
+   * TimeoutMs == 0 polls once, > 0 waits up to that many milliseconds,
+   * < 0 waits until Unlisten.
+   */
+  accept(server: string, timeoutMs: number): Promise<ConnInfo> {
+    return call("TcpService.Accept", server, timeoutMs);
+  },
+  /**
+   * AttachStream connects the RX stream manager (ticket #11). When attached,
+   * Open starts a per-client read loop, Close stops it, and every
+   * successful reconnect Resets framer residue while keeping matchers. A nil
+   * manager detaches and clears client hooks. NOT bound in main.go.
+   */
+  attachStream(m: Manager | null): Promise<void> {
+    return call("TcpService.AttachStream", m);
+  },
+  /**
+   * Close shuts the named client; closing an unknown client is an error,
+   * closing twice is not possible (the name is removed).
+   */
+  close(name: string): Promise<void> {
+    return call("TcpService.Close", name);
+  },
+  /**
+   * List returns every known channel: clients, servers, and accepted server
+   * connections.
+   */
+  list(): Promise<ChannelInfo[]> {
+    return call("TcpService.List");
+  },
+  /** Listen starts a named server; names are exclusive across servers. */
+  listen(req: ListenRequest): Promise<ListenInfo> {
+    return call("TcpService.Listen", req);
+  },
+  /** Open dials a client; names are exclusive across clients. */
+  open(req: TcpOpenRequest): Promise<ConnInfo> {
+    return call("TcpService.Open", req);
+  },
+  /** Recv reads up to maxLen bytes from the named client. */
+  recv(name: string, maxLen: number): Promise<string> {
+    return call("TcpService.Recv", name, maxLen);
+  },
+  /** Send writes data to the named client; fails fast while unconnected. */
+  send(name: string, data: string): Promise<number> {
+    return call("TcpService.Send", name, data);
+  },
+  /** ServerClose shuts one accepted connection. */
+  serverClose(server: string, id: string): Promise<void> {
+    return call("TcpService.ServerClose", server, id);
+  },
+  /** ServerConns lists live accepted-connection ids on the named server. */
+  serverConns(server: string): Promise<ConnInfo[]> {
+    return call("TcpService.ServerConns", server);
+  },
+  /** ServerRecv reads from one accepted connection. */
+  serverRecv(server: string, id: string, maxLen: number): Promise<string> {
+    return call("TcpService.ServerRecv", server, id, maxLen);
+  },
+  /** ServerSend writes to one accepted connection. */
+  serverSend(server: string, id: string, data: string): Promise<number> {
+    return call("TcpService.ServerSend", server, id, data);
+  },
+  /** Status reports the named client's status-machine state. */
+  status(name: string): Promise<ConnState> {
+    return call("TcpService.Status", name);
+  },
+  /** Unlisten shuts the named server and all its connections. */
+  unlisten(server: string): Promise<void> {
+    return call("TcpService.Unlisten", server);
+  },
+} as const;
+
+/**
+ * ScriptAPI is the bound scripting surface. Sessions (Engine.Load) stay
+ * Go-side until the UI grows a session surface; Run/RunFile cover the
+ * script-run panel.
+ */
+export const ScriptAPI = {
+  /** Run executes Lua source with a millisecond timeout. */
+  run(src: string, timeoutMs: number): Promise<void> {
+    return call("ScriptAPI.Run", src, timeoutMs);
+  },
+  /** RunFile executes a script file with a millisecond timeout. */
+  runFile(path: string, timeoutMs: number): Promise<void> {
+    return call("ScriptAPI.RunFile", path, timeoutMs);
+  },
+} as const;
+
+/** ConfigAPI exposes presets and favorites to the UI. */
+export const ConfigAPI = {
+  /** Favorites returns persisted script-favorite paths. */
+  favorites(): Promise<string[]> {
+    return call("ConfigAPI.Favorites");
+  },
+  /** Presets returns named channel presets. */
+  presets(): Promise<Record<string, Preset>> {
+    return call("ConfigAPI.Presets");
+  },
+  /** SetFavorites persists script-favorite paths (atomic write). */
+  setFavorites(favs: string[]): Promise<void> {
+    return call("ConfigAPI.SetFavorites", favs);
+  },
+} as const;
+
 // ---- Events ----
 
 /** Events sent by the Go side. Subscribe with `events.name.on(listener)`. */
 export const events = {
   /** Tick is sent to the page every second. */
   tick: event<string>("tick"),
+  /**
+   * Frames carries unmatched-frame batches (matcher-first path) to the UI.
+   * Payloads cross as base64 strings; see script.FrameDTO.
+   */
+  frames: event<FrameDTO[]>("frames"),
 } as const;

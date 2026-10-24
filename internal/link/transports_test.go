@@ -1,4 +1,4 @@
-package script
+package link
 
 import (
 	"fmt"

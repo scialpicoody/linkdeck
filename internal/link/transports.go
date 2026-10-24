@@ -1,4 +1,8 @@
-package script
+// Package link wires real drivers behind the script engine's Transport
+// contract. It lives outside internal/script so the driver packages stay
+// out of the engine's import graph (serial/tcp → stream → script must
+// remain acyclic); only main imports this package.
+package link
 
 import (
 	"errors"
@@ -9,8 +13,23 @@ import (
 	"sync"
 	"time"
 
+	"linkdeck/internal/script"
 	"linkdeck/internal/serial"
 	"linkdeck/internal/tcp"
+)
+
+// Engine-contract aliases so the moved code reads unchanged.
+type (
+	Transport         = script.Transport
+	ListenerTransport = script.ListenerTransport
+	Handle            = script.Handle
+	OpenOptions       = script.OpenOptions
+	EngineOptions     = script.EngineOptions
+)
+
+var (
+	ErrTimeout = script.ErrTimeout
+	NewEngine  = script.NewEngine
 )
 
 var (
