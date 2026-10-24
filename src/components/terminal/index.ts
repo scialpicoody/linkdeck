@@ -1,13 +1,13 @@
-export { default as TerminalPanel } from "./TerminalPanel";
 export {
   FLOOD_HIGH_WATERMARK_BYTES,
-  LIST_ROW_CAP,
-  MAX_WRITE_BYTES,
-  SCROLLBACK_LINES,
   formatBytes,
   formatTs,
   frameBytes,
+  LIST_ROW_CAP,
+  MAX_WRITE_BYTES,
+  SCROLLBACK_LINES,
   toHex,
 } from "./format";
-export { serialPortName } from "./types";
+export { default as TerminalPanel } from "./TerminalPanel";
 export type { Frame, FrameDirection, TerminalChannel, TerminalPanelProps } from "./types";
+export { serialPortName } from "./types";

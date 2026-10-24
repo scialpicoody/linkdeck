@@ -1,0 +1,5 @@
+{
+  "$schema": "https://unpkg.com/knip@6.42.1/schema.json",
+  "project": ["src/**/*"],
+  "ignore": ["src/mygo.ts"]
+}

@@ -1,18 +1,19 @@
-import { useEffect, useRef, useState } from "react";
 import type { Terminal as XtermTerminal } from "@xterm/xterm";
+import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import "@xterm/xterm/css/xterm.css";
 import { SerialService } from "../../mygo";
 import {
   FLOOD_HIGH_WATERMARK_BYTES,
-  LIST_ROW_CAP,
-  MAX_WRITE_BYTES,
-  SCROLLBACK_LINES,
   formatBytes,
   formatTs,
   frameBytes,
+  LIST_ROW_CAP,
+  MAX_WRITE_BYTES,
+  SCROLLBACK_LINES,
   toHex,
 } from "./format";
-import { serialPortName, type Frame, type TerminalPanelProps } from "./types";
+import { type Frame, serialPortName, type TerminalPanelProps } from "./types";
 
 /**
  * Serial frame monitor: an xterm.js canvas view over `frames` plus a
@@ -46,6 +47,7 @@ export default function TerminalPanel({ channel, frames, onSend }: TerminalPanel
   // static import would pull the ~345 KB xterm bundle into the initial chunk
   // on every load, while most sessions never open this panel
   // (docs/research/frontend-stack.md: keep heavyweights out of startup).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: xterm lifetime is mount-once by design; pump reads only refs and set-state.
   useEffect(() => {
     let disposed = false;
     let term: XtermTerminal | null = null;
@@ -70,7 +72,6 @@ export default function TerminalPanel({ channel, frames, onSend }: TerminalPanel
       termRef.current = null;
       writingRef.current = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Reset stream state when the channel changes; stale frames belong to the
@@ -85,6 +86,7 @@ export default function TerminalPanel({ channel, frames, onSend }: TerminalPanel
   }
 
   // Enqueue new frames with drop-oldest backpressure, then pump the writer.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: frame-driven by design; pump reads only refs and set-state so its identity must not retrigger.
   useEffect(() => {
     const fresh = frames.slice(queuedCountRef.current);
     if (fresh.length === 0) return;
@@ -92,7 +94,7 @@ export default function TerminalPanel({ channel, frames, onSend }: TerminalPanel
     let droppedN = 0;
     let droppedB = 0;
     for (const frame of fresh) {
-      const text = frame.data.endsWith("\n") ? frame.data : frame.data + "\n";
+      const text = frame.data.endsWith("\n") ? frame.data : `${frame.data}\n`;
       const len = frameBytes(text);
       while (
         queueRef.current.length > 0 &&
@@ -111,7 +113,6 @@ export default function TerminalPanel({ channel, frames, onSend }: TerminalPanel
       setDroppedBytes((b) => b + droppedB);
     }
     pump();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frames]);
 
   function pump() {
@@ -158,7 +159,9 @@ export default function TerminalPanel({ channel, frames, onSend }: TerminalPanel
       await SerialService.send(port, text);
       setComposer("");
     } catch (err) {
-      setSendError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setSendError(message);
+      toast.error(`Send to ${port ?? "channel"} failed`, { description: message });
     } finally {
       setSending(false);
     }
@@ -169,7 +172,10 @@ export default function TerminalPanel({ channel, frames, onSend }: TerminalPanel
   for (let i = start; i < frames.length; i++) rows.push({ frame: frames[i] as Frame, index: i });
 
   return (
-    <section aria-label="Terminal" className="flex min-h-0 flex-col rounded-[var(--radius)] border border-border bg-card text-foreground">
+    <section
+      aria-label="Terminal"
+      className="flex min-h-0 flex-col rounded-[var(--radius)] border border-border bg-card text-foreground"
+    >
       <header className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
         <div className="min-w-0">
           <h2 className="truncate text-sm font-medium">{channelLabel}</h2>
@@ -199,14 +205,18 @@ export default function TerminalPanel({ channel, frames, onSend }: TerminalPanel
 
       <div ref={hostRef} className="min-h-48 flex-1 bg-black/90" data-testid="xterm-host" />
 
-      <ol aria-label="Frames" className="max-h-56 min-h-0 overflow-y-auto border-t border-border font-mono text-xs">
-        {rows.length === 0 && (
-          <li className="px-3 py-2 text-muted-foreground">No frames yet.</li>
-        )}
+      <ol
+        aria-label="Frames"
+        className="max-h-56 min-h-0 overflow-y-auto border-t border-border font-mono text-xs"
+      >
+        {rows.length === 0 && <li className="px-3 py-2 text-muted-foreground">No frames yet.</li>}
         {rows.map(({ frame, index }) => {
           const hex = hexLines.has(index);
           return (
-            <li key={index} className="flex items-baseline gap-2 border-b border-border/50 px-3 py-1">
+            <li
+              key={index}
+              className="flex items-baseline gap-2 border-b border-border/50 px-3 py-1"
+            >
               <span className="shrink-0 text-muted-foreground">{formatTs(frame.ts)}</span>
               <span
                 className={
@@ -259,7 +269,10 @@ export default function TerminalPanel({ channel, frames, onSend }: TerminalPanel
         </button>
       </form>
       {sendError && (
-        <p role="alert" className="border-t border-border px-3 py-1.5 text-xs text-red-600 dark:text-red-400">
+        <p
+          role="alert"
+          className="border-t border-border px-3 py-1.5 text-xs text-red-600 dark:text-red-400"
+        >
           Send failed: {sendError}
         </p>
       )}

@@ -1,8 +1,13 @@
 import { useState } from "react";
-import FrameDetail from "./FrameDetail";
 import ChannelConfig from "./ChannelConfig";
+import FrameDetail from "./FrameDetail";
 import SessionStats from "./SessionStats";
-import { DEFAULT_CONFIG, type ChannelConfigValue, type InspectorFrame, type SessionStatsValue } from "./types";
+import {
+  type ChannelConfigValue,
+  DEFAULT_CONFIG,
+  type InspectorFrame,
+  type SessionStatsValue,
+} from "./types";
 
 export type InspectorTab = "detail" | "config" | "stats";
 
@@ -57,7 +62,11 @@ export default function InspectorPanel({
       aria-label="Inspector"
       className="flex min-h-0 w-full flex-1 flex-col rounded-[var(--radius)] border border-border bg-background text-foreground"
     >
-      <div role="tablist" aria-label="Inspector tabs" className="flex gap-1 border-b border-border px-3 py-2">
+      <div
+        role="tablist"
+        aria-label="Inspector tabs"
+        className="flex gap-1 border-b border-border px-3 py-2"
+      >
         {TABS.map((t) => (
           <button
             key={t.id}

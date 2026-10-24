@@ -3,7 +3,9 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./style.css";
 
-createRoot(document.getElementById("root")!).render(
+const root = document.getElementById("root");
+if (root === null) throw new Error("missing #root mount point");
+createRoot(root).render(
   <StrictMode>
     <App />
   </StrictMode>,

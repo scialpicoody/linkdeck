@@ -14,7 +14,8 @@ const H = 64;
 function pointsFor(values: number[], max: number): string {
   if (values.length === 0) return "";
   if (values.length === 1) {
-    const y = H - 4 - (values[0]! / Math.max(max, 1)) * (H - 8);
+    const first = values[0] ?? 0;
+    const y = H - 4 - (first / Math.max(max, 1)) * (H - 8);
     return `0,${y.toFixed(1)} ${W},${y.toFixed(1)}`;
   }
   const step = W / (values.length - 1);
@@ -49,8 +50,14 @@ export default function SessionStats({ stats, windowSecs = 60 }: SessionStatsPro
   const uptimeSecs = Math.max(0, Math.floor((Date.now() - stats.startedAtMs) / 1000));
 
   const totals: { label: string; value: string }[] = [
-    { label: "RX", value: `${stats.rxBytes.toLocaleString()} B · ${stats.rxFrames.toLocaleString()} frames` },
-    { label: "TX", value: `${stats.txBytes.toLocaleString()} B · ${stats.txFrames.toLocaleString()} frames` },
+    {
+      label: "RX",
+      value: `${stats.rxBytes.toLocaleString()} B · ${stats.rxFrames.toLocaleString()} frames`,
+    },
+    {
+      label: "TX",
+      value: `${stats.txBytes.toLocaleString()} B · ${stats.txFrames.toLocaleString()} frames`,
+    },
     {
       label: "Errors",
       value: `${stats.framingErrors + stats.checksumErrors} (${stats.framingErrors} framing · ${stats.checksumErrors} checksum)`,
@@ -79,7 +86,9 @@ export default function SessionStats({ stats, windowSecs = 60 }: SessionStatsPro
           <h3 className="text-xs font-medium text-card-foreground">
             Throughput (last {windowSecs}s)
           </h3>
-          <p className="font-mono text-[11px] text-muted-foreground">peak {peak.toLocaleString()} B/s</p>
+          <p className="font-mono text-[11px] text-muted-foreground">
+            peak {peak.toLocaleString()} B/s
+          </p>
         </div>
         {windowed.length === 0 ? (
           <p className="py-5 text-center text-xs text-muted-foreground">

@@ -20,10 +20,10 @@ export interface ScriptEntry {
 }
 
 /** Output row kinds. `error` rows may carry a `file.lua:<line>` reference. */
-export type ScriptOutputType = "log" | "tx" | "rx" | "error" | "system";
+type ScriptOutputType = "log" | "tx" | "rx" | "error" | "system";
 
 /** Frame direction from the script's point of view. */
-export type ScriptDirection = "in" | "out" | "local";
+type ScriptDirection = "in" | "out" | "local";
 
 /**
  * One output-pane row. JSON-lines shaped: `{type, channel, direction, data, ts}`.

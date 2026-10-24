@@ -1,11 +1,7 @@
 import type { Parity, StopBits } from "../../mygo";
 
 /** Framing kinds from CONTEXT.md (delimiter, length-prefix, fixed-size, header-length-checksum). */
-export type FramingKind =
-  | "delimiter"
-  | "length-prefix"
-  | "fixed-size"
-  | "header-checksum";
+export type FramingKind = "delimiter" | "length-prefix" | "fixed-size" | "header-checksum";
 
 export type FrameDirection = "rx" | "tx";
 
@@ -75,6 +71,20 @@ export const DEFAULT_CONFIG: ChannelConfigValue = {
   framingOption: "0A",
   readTimeoutMs: 0,
 };
+
+/** Field-by-field equality for dirty-tracking the config form. */
+export function configsEqual(a: ChannelConfigValue, b: ChannelConfigValue): boolean {
+  return (
+    a.port === b.port &&
+    a.baudRate === b.baudRate &&
+    a.dataBits === b.dataBits &&
+    a.parity === b.parity &&
+    a.stopBits === b.stopBits &&
+    a.framing === b.framing &&
+    a.framingOption === b.framingOption &&
+    a.readTimeoutMs === b.readTimeoutMs
+  );
+}
 
 export function emptyStats(nowMs = Date.now()): SessionStatsValue {
   return {

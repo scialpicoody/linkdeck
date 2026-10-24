@@ -1,6 +1,10 @@
 import { useMemo, useState } from "react";
-import type { ChannelConfigValue, FramingKind } from "./types";
+import { toast } from "sonner";
+import { cn } from "../../lib/utils";
 import type { Parity, StopBits } from "../../mygo";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { type FieldOption, FieldSelect } from "../ui/FieldSelect";
+import { type ChannelConfigValue, configsEqual, type FramingKind } from "./types";
 
 const BAUD_RATES = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
 const DATA_BITS = [5, 6, 7, 8] as const;
@@ -20,6 +24,17 @@ const FRAMING_HINT: Record<FramingKind, string> = {
   "header-checksum": "Checksum name, e.g. crc16.",
 };
 
+const baudOptions: FieldOption[] = BAUD_RATES.map((b) => ({
+  value: String(b),
+  label: b.toLocaleString(),
+}));
+const dataBitOptions: FieldOption[] = DATA_BITS.map((d) => ({
+  value: String(d),
+  label: String(d),
+}));
+const parityOptions: FieldOption[] = PARITIES.map((p) => ({ value: p, label: p }));
+const stopBitOptions: FieldOption[] = STOP_BITS.map((s) => ({ value: s, label: s }));
+const framingOptions: FieldOption[] = FRAMING.map((f) => ({ value: f.value, label: f.label }));
 export interface ChannelConfigProps {
   /** Current channel settings (mock or store-provided). */
   initial: ChannelConfigValue;
@@ -33,37 +48,34 @@ export interface ChannelConfigProps {
   onApply?: (cfg: ChannelConfigValue) => void;
 }
 
-function configsEqual(a: ChannelConfigValue, b: ChannelConfigValue): boolean {
-  return (
-    a.port === b.port &&
-    a.baudRate === b.baudRate &&
-    a.dataBits === b.dataBits &&
-    a.parity === b.parity &&
-    a.stopBits === b.stopBits &&
-    a.framing === b.framing &&
-    a.framingOption === b.framingOption &&
-    a.readTimeoutMs === b.readTimeoutMs
-  );
-}
-
 export default function ChannelConfig({ initial, onApply }: ChannelConfigProps) {
   const [draft, setDraft] = useState<ChannelConfigValue>(initial);
+  const [confirmReset, setConfirmReset] = useState(false);
   const dirty = useMemo(() => !configsEqual(draft, initial), [draft, initial]);
 
   function set<K extends keyof ChannelConfigValue>(key: K, value: ChannelConfigValue[K]): void {
     setDraft((prev) => ({ ...prev, [key]: value }));
   }
 
-  const selectClass =
-    "min-h-9 w-full rounded-[var(--radius)] border border-input bg-card px-2.5 text-sm text-foreground focus:outline-2 focus:outline-ring";
   const labelClass = "mb-1 block text-xs font-medium text-muted-foreground";
+  const inputClass =
+    "min-h-9 w-full rounded-[var(--radius)] border border-input bg-card px-2.5 font-mono text-sm text-foreground placeholder:text-muted-foreground focus:outline-2 focus:outline-ring";
+
+  function handleApply() {
+    try {
+      onApply?.(draft);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error("Configuration apply failed", { description: message });
+    }
+  }
 
   return (
     <form
       className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto p-4"
       onSubmit={(e) => {
         e.preventDefault();
-        onApply?.(draft);
+        handleApply();
       }}
     >
       <div>
@@ -76,98 +88,48 @@ export default function ChannelConfig({ initial, onApply }: ChannelConfigProps) 
           onChange={(e) => set("port", e.target.value)}
           placeholder="/dev/tty.usbserial-…"
           autoComplete="off"
-          className="min-h-9 w-full rounded-[var(--radius)] border border-input bg-card px-2.5 font-mono text-sm text-foreground placeholder:text-muted-foreground focus:outline-2 focus:outline-ring"
+          className={cn(inputClass, "font-mono")}
         />
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label htmlFor="inspector-baud" className={labelClass}>
-            Baud rate
-          </label>
-          <select
-            id="inspector-baud"
-            value={draft.baudRate}
-            onChange={(e) => set("baudRate", Number(e.target.value))}
-            className={selectClass}
-          >
-            {BAUD_RATES.map((b) => (
-              <option key={b} value={b}>
-                {b.toLocaleString()}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label htmlFor="inspector-data" className={labelClass}>
-            Data bits
-          </label>
-          <select
-            id="inspector-data"
-            value={draft.dataBits}
-            onChange={(e) => set("dataBits", Number(e.target.value) as ChannelConfigValue["dataBits"])}
-            className={selectClass}
-          >
-            {DATA_BITS.map((d) => (
-              <option key={d} value={d}>
-                {d}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label htmlFor="inspector-parity" className={labelClass}>
-            Parity
-          </label>
-          <select
-            id="inspector-parity"
-            value={draft.parity}
-            onChange={(e) => set("parity", e.target.value as Parity)}
-            className={selectClass}
-          >
-            {PARITIES.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label htmlFor="inspector-stop" className={labelClass}>
-            Stop bits
-          </label>
-          <select
-            id="inspector-stop"
-            value={draft.stopBits}
-            onChange={(e) => set("stopBits", e.target.value as StopBits)}
-            className={selectClass}
-          >
-            {STOP_BITS.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </div>
+        <FieldSelect
+          id="inspector-baud"
+          label="Baud rate"
+          value={String(draft.baudRate)}
+          onValueChange={(v) => set("baudRate", Number(v))}
+          options={baudOptions}
+        />
+        <FieldSelect
+          id="inspector-data"
+          label="Data bits"
+          value={String(draft.dataBits)}
+          onValueChange={(v) => set("dataBits", Number(v) as ChannelConfigValue["dataBits"])}
+          options={dataBitOptions}
+        />
+        <FieldSelect
+          id="inspector-parity"
+          label="Parity"
+          value={draft.parity}
+          onValueChange={(v) => set("parity", v as Parity)}
+          options={parityOptions}
+        />
+        <FieldSelect
+          id="inspector-stop"
+          label="Stop bits"
+          value={draft.stopBits}
+          onValueChange={(v) => set("stopBits", v as StopBits)}
+          options={stopBitOptions}
+        />
       </div>
 
-      <div>
-        <label htmlFor="inspector-framing" className={labelClass}>
-          Framing
-        </label>
-        <select
-          id="inspector-framing"
-          value={draft.framing}
-          onChange={(e) => set("framing", e.target.value as FramingKind)}
-          className={selectClass}
-        >
-          {FRAMING.map((f) => (
-            <option key={f.value} value={f.value}>
-              {f.label}
-            </option>
-          ))}
-        </select>
-      </div>
+      <FieldSelect
+        id="inspector-framing"
+        label="Framing"
+        value={draft.framing}
+        onValueChange={(v) => set("framing", v as FramingKind)}
+        options={framingOptions}
+      />
 
       <div>
         <label htmlFor="inspector-framing-opt" className={labelClass}>
@@ -178,7 +140,7 @@ export default function ChannelConfig({ initial, onApply }: ChannelConfigProps) 
           value={draft.framingOption}
           onChange={(e) => set("framingOption", e.target.value)}
           autoComplete="off"
-          className="min-h-9 w-full rounded-[var(--radius)] border border-input bg-card px-2.5 font-mono text-sm text-foreground focus:outline-2 focus:outline-ring"
+          className={inputClass}
         />
         <p className="mt-1 text-[11px] text-muted-foreground">{FRAMING_HINT[draft.framing]}</p>
       </div>
@@ -193,7 +155,7 @@ export default function ChannelConfig({ initial, onApply }: ChannelConfigProps) 
           step={1}
           value={draft.readTimeoutMs}
           onChange={(e) => set("readTimeoutMs", Number(e.target.value))}
-          className="min-h-9 w-full rounded-[var(--radius)] border border-input bg-card px-2.5 font-mono text-sm text-foreground focus:outline-2 focus:outline-ring"
+          className={inputClass}
         />
       </div>
 
@@ -208,12 +170,21 @@ export default function ChannelConfig({ initial, onApply }: ChannelConfigProps) 
         <button
           type="button"
           disabled={!dirty}
-          onClick={() => setDraft(initial)}
+          onClick={() => setConfirmReset(true)}
           className="min-h-9 rounded-[var(--radius)] border border-border bg-card px-4 text-sm text-card-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
         >
           Reset
         </button>
       </div>
+
+      <ConfirmDialog
+        open={confirmReset}
+        onOpenChange={setConfirmReset}
+        title="Discard channel config changes?"
+        description="Your edits will be lost and the form resets to the current channel settings."
+        confirmLabel="Discard"
+        onConfirm={() => setDraft(initial)}
+      />
     </form>
   );
 }

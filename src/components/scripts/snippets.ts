@@ -12,8 +12,6 @@
  * so it stays in the cheap initial chunk; Monaco itself lazy-loads in
  * `ScriptEditor`.
  */
-import type * as monaco from "monaco-editor";
-
 export interface LuaSnippet {
   /** Stable key, e.g. `serial.open`. */
   key: string;
@@ -46,7 +44,7 @@ export const LUA_SNIPPETS: LuaSnippet[] = [
   {
     key: "serial.recv",
     label: "serial.recv",
-    detail: "Receive raw bytes; nil + \"timeout\" on timeout",
+    detail: 'Receive raw bytes; nil + "timeout" on timeout',
     body: "local ${1:data}, ${2:err} = serial.recv(${3:h}, ${4:1000})",
   },
   {
@@ -86,7 +84,7 @@ export const LUA_SNIPPETS: LuaSnippet[] = [
   {
     key: "tcp.recv",
     label: "tcp.recv",
-    detail: "Receive raw bytes; nil + \"timeout\" on timeout",
+    detail: 'Receive raw bytes; nil + "timeout" on timeout',
     body: "local ${1:data}, ${2:err} = tcp.recv(${3:c}, ${4:1000})",
   },
   {
@@ -120,7 +118,7 @@ export const LUA_SNIPPETS: LuaSnippet[] = [
   {
     key: "expect.regex",
     label: "expect (regex mode)",
-    detail: "Expect with mode = \"regex\"",
+    detail: 'Expect with mode = "regex"',
     body: [
       "local ${1:data}, ${2:err} = expect(${3:h}, ${4:pattern}, {",
       '\tmode = "regex",',
@@ -131,7 +129,7 @@ export const LUA_SNIPPETS: LuaSnippet[] = [
   {
     key: "expect.pattern",
     label: "expect (pattern mode)",
-    detail: "Expect with mode = \"pattern\" (Lua patterns)",
+    detail: 'Expect with mode = "pattern" (Lua patterns)',
     body: [
       "local ${1:data}, ${2:err} = expect(${3:h}, ${4:pattern}, {",
       '\tmode = "pattern",',
@@ -170,38 +168,3 @@ export const LUA_SNIPPETS: LuaSnippet[] = [
     body: "local ${1:value} = json.decode(${2:s})",
   },
 ];
-
-/**
- * Register the built-in snippets as a Monaco Lua completion provider.
- * Returns the disposable so the editor owner can clean it up. Safe to call
- * once per Monaco instance (duplicate registration only duplicates
- * suggestions, so owners SHOULD guard with a module-level flag).
- */
-export function registerLuaSnippets(
-  monacoApi: typeof monaco,
-): monaco.IDisposable {
-  return monacoApi.languages.registerCompletionItemProvider("lua", {
-    triggerCharacters: ["."],
-    provideCompletionItems: (model, position) => {
-      const word = model.getWordUntilPosition(position);
-      const range = {
-        startLineNumber: position.lineNumber,
-        endLineNumber: position.lineNumber,
-        startColumn: word.startColumn,
-        endColumn: word.endColumn,
-      };
-      const suggestions: monaco.languages.CompletionItem[] = LUA_SNIPPETS.map(
-        (s) => ({
-          label: s.label,
-          kind: monacoApi.languages.CompletionItemKind.Snippet,
-          detail: s.detail,
-          insertText: s.body,
-          insertTextRules:
-            monacoApi.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-          range,
-        }),
-      );
-      return { suggestions };
-    },
-  });
-}

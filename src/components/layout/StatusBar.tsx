@@ -1,4 +1,5 @@
-import { stateColor, type Channel } from "../../lib/channels";
+import { type Channel, stateColor } from "../../lib/channels";
+import { Hint } from "../ui/Hint";
 
 interface StatusBarProps {
   channel: Channel | null;
@@ -27,14 +28,15 @@ export function StatusBar({ channel, clock, onResetCounters }: StatusBarProps) {
             {channel.endpoint}
             {channel.baudRate !== undefined ? ` · ${channel.baudRate} baud` : ""}
           </span>
-          <button
-            type="button"
-            onClick={() => onResetCounters(channel.id)}
-            title="Click to reset RX/TX counters"
-            className="rounded px-1 hover:bg-muted hover:text-card-foreground"
-          >
-            RX {channel.rxBytes} B · TX {channel.txBytes} B
-          </button>
+          <Hint label="Click to reset RX/TX counters">
+            <button
+              type="button"
+              onClick={() => onResetCounters(channel.id)}
+              className="rounded px-1 hover:bg-muted hover:text-card-foreground"
+            >
+              RX {channel.rxBytes} B · TX {channel.txBytes} B
+            </button>
+          </Hint>
           {channel.error !== undefined && (
             <span className="text-red-500" role="alert">
               {channel.error}

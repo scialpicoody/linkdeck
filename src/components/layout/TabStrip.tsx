@@ -1,4 +1,7 @@
-import { stateColor, type Channel, type ChannelTab } from "../../lib/channels";
+import { X } from "lucide-react";
+import { type Channel, type ChannelTab, stateColor } from "../../lib/channels";
+import { cn } from "../../lib/utils";
+import { Hint } from "../ui/Hint";
 
 interface TabStripProps {
   tabs: ChannelTab[];
@@ -18,7 +21,10 @@ export function TabStrip({ tabs, channels, activeId, onSelect, onClose }: TabStr
     );
   }
   return (
-    <div className="flex items-center gap-1 overflow-x-auto border-b border-border bg-background px-2 py-1.5" role="tablist">
+    <div
+      className="flex items-center gap-1 overflow-x-auto border-b border-border bg-background px-2 py-1.5"
+      role="tablist"
+    >
       {tabs.map((t) => {
         const ch = byId.get(t.channelId);
         const label = ch?.name ?? t.channelId;
@@ -30,9 +36,17 @@ export function TabStrip({ tabs, channels, activeId, onSelect, onClose }: TabStr
             key={t.channelId}
             role="tab"
             aria-selected={isActive}
-            className={`flex items-center gap-1.5 rounded-[var(--radius)] border px-2 py-1 text-sm whitespace-nowrap ${
-              isActive ? "border-border bg-card" : "border-transparent hover:bg-muted"
-            }`}
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(t.channelId);
+              }
+            }}
+            className={cn(
+              "flex items-center gap-1.5 rounded-[var(--radius)] border px-2 py-1 text-sm whitespace-nowrap",
+              isActive ? "border-border bg-card" : "border-transparent hover:bg-muted",
+            )}
           >
             <button
               type="button"
@@ -40,6 +54,7 @@ export function TabStrip({ tabs, channels, activeId, onSelect, onClose }: TabStr
               className="flex items-center gap-1.5"
             >
               <span
+                role="img"
                 aria-label={`state: ${state}`}
                 className="inline-block h-2 w-2 rounded-full"
                 style={{ backgroundColor: stateColor(state) }}
@@ -51,14 +66,16 @@ export function TabStrip({ tabs, channels, activeId, onSelect, onClose }: TabStr
                 </span>
               )}
             </button>
-            <button
-              type="button"
-              onClick={() => onClose(t.channelId)}
-              aria-label={`Close ${label}`}
-              className="rounded px-1 text-muted-foreground hover:bg-secondary hover:text-secondary-foreground"
-            >
-              ×
-            </button>
+            <Hint label={`Close ${label}`}>
+              <button
+                type="button"
+                onClick={() => onClose(t.channelId)}
+                aria-label={`Close ${label}`}
+                className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-secondary-foreground"
+              >
+                <X size={14} aria-hidden="true" />
+              </button>
+            </Hint>
           </div>
         );
       })}

@@ -4,13 +4,13 @@
 // changes, never renames, without coordinating with all panel owners.
 
 import { useCallback, useEffect, useState } from "react";
-import { SerialService, type PortInfo } from "../mygo";
+import { type PortInfo, SerialService } from "../mygo";
 
 /** Lifecycle state of a channel. Drives state dots in sidebar/tabs/status. */
 export type ChannelState = "connected" | "connecting" | "disconnected" | "error";
 
 /** Transport kind. Only serial exists today; TCP variants are reserved. */
-export type ChannelKind = "serial";
+type ChannelKind = "serial";
 
 /**
  * Channel is a named communication endpoint. Today every channel mirrors a
@@ -130,19 +130,15 @@ export function useChannels(pollMs = 3000): UseChannels {
 
   useEffect(() => {
     if (activeId !== null && !tabs.some((t) => t.channelId === activeId)) {
-      setActiveId(tabs.length > 0 ? tabs[tabs.length - 1]!.channelId : null);
+      const last = tabs[tabs.length - 1];
+      setActiveId(last === undefined ? null : last.channelId);
     }
   }, [tabs, activeId]);
 
-  const openChannel = useCallback(
-    (id: string) => {
-      setTabs((prev) =>
-        prev.some((t) => t.channelId === id) ? prev : [...prev, { channelId: id }],
-      );
-      setActiveId(id);
-    },
-    [],
-  );
+  const openChannel = useCallback((id: string) => {
+    setTabs((prev) => (prev.some((t) => t.channelId === id) ? prev : [...prev, { channelId: id }]));
+    setActiveId(id);
+  }, []);
 
   const closeChannel = useCallback((id: string) => {
     setTabs((prev) => prev.filter((t) => t.channelId !== id));
@@ -157,15 +153,11 @@ export function useChannels(pollMs = 3000): UseChannels {
   }, []);
 
   const resetCounters = useCallback((id: string) => {
-    setChannels((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, rxBytes: 0, txBytes: 0 } : c)),
-    );
+    setChannels((prev) => prev.map((c) => (c.id === id ? { ...c, rxBytes: 0, txBytes: 0 } : c)));
   }, []);
 
   const setChannelState = useCallback((id: string, state: ChannelState, error?: string) => {
-    setChannels((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, state, error } : c)),
-    );
+    setChannels((prev) => prev.map((c) => (c.id === id ? { ...c, state, error } : c)));
   }, []);
 
   const active = channels.find((c) => c.id === activeId) ?? null;
@@ -198,7 +190,6 @@ export function stateColor(state: ChannelState): string {
       return "#eab308";
     case "error":
       return "#ef4444";
-    case "disconnected":
     default:
       return "#9aa0a6";
   }

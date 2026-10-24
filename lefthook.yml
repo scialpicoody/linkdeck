@@ -1,0 +1,11 @@
+pre-commit:
+  parallel: true
+  commands:
+    biome:
+      glob: "*.{ts,tsx,js,json,css}"
+      run: bunx @biomejs/biome check --no-errors-on-unmatched {staged_files}
+    typecheck:
+      run: bun run typecheck
+    gofmt:
+      glob: "*.go"
+      run: gofmt -l internal main.go

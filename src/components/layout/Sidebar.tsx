@@ -1,4 +1,4 @@
-import { stateColor, type Channel } from "../../lib/channels";
+import { type Channel, stateColor } from "../../lib/channels";
 
 interface SidebarProps {
   channels: Channel[];
@@ -14,9 +14,19 @@ const PRESETS: Array<{ name: string; detail: string }> = [
   { name: "9600 8N1", detail: "Legacy device preset" },
 ];
 
-export function Sidebar({ channels, activeId, loading, listError, onOpen, onSelect }: SidebarProps) {
+export function Sidebar({
+  channels,
+  activeId,
+  loading,
+  listError,
+  onOpen,
+  onSelect,
+}: SidebarProps) {
   return (
-    <nav className="flex w-60 flex-col border-r border-border bg-card" aria-label="Workbench sidebar">
+    <nav
+      className="flex w-60 flex-col border-r border-border bg-card"
+      aria-label="Workbench sidebar"
+    >
       <section className="flex-1 overflow-auto p-2">
         <h2 className="px-2 pt-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
           Channels
@@ -43,6 +53,7 @@ export function Sidebar({ channels, activeId, loading, listError, onOpen, onSele
                   title={ch.endpoint}
                 >
                   <span
+                    role="img"
                     aria-label={`state: ${ch.state}`}
                     className="inline-block h-2 w-2 shrink-0 rounded-full"
                     style={{ backgroundColor: stateColor(ch.state) }}

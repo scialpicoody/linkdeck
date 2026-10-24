@@ -6,7 +6,7 @@ type DetailView = "hex" | "ascii" | "json";
 const HEX_CHARS = "0123456789abcdef";
 
 function byteToHex(b: number): string {
-  return HEX_CHARS[(b >> 4) & 0xf]! + HEX_CHARS[b & 0xf]!;
+  return HEX_CHARS.charAt((b >> 4) & 0xf) + HEX_CHARS.charAt(b & 0xf);
 }
 
 function isPrintable(b: number): boolean {
@@ -26,12 +26,12 @@ function hexdump(payload: Uint8Array): string {
     const hex: string[] = [];
     let asc = "";
     for (let i = 0; i < 16; i++) {
-      if (i < slice.length) {
-        const b = slice[i]!;
+      const b: number | undefined = slice[i];
+      if (b === undefined) {
+        hex.push("  ");
+      } else {
         hex.push(byteToHex(b));
         asc += isPrintable(b) ? String.fromCharCode(b) : ".";
-      } else {
-        hex.push("  ");
       }
       if (i === 7) hex.push("");
     }
@@ -109,9 +109,7 @@ export default function FrameDetail({ frame }: FrameDetailProps) {
     <div className="flex min-h-0 flex-1 flex-col">
       <dl className="grid grid-cols-2 gap-x-4 gap-y-1 border-b border-border px-4 py-3 text-xs">
         <dt className="text-muted-foreground">Channel</dt>
-        <dd className="truncate font-mono text-right text-card-foreground">
-          {frame.channelName}
-        </dd>
+        <dd className="truncate font-mono text-right text-card-foreground">{frame.channelName}</dd>
         <dt className="text-muted-foreground">Direction</dt>
         <dd className="font-mono text-right text-card-foreground">
           {frame.direction.toUpperCase()}
@@ -121,9 +119,7 @@ export default function FrameDetail({ frame }: FrameDetailProps) {
           {new Date(frame.timestampMs).toLocaleTimeString()}
         </dd>
         <dt className="text-muted-foreground">Length</dt>
-        <dd className="font-mono text-right text-card-foreground">
-          {frame.payload.length} B
-        </dd>
+        <dd className="font-mono text-right text-card-foreground">{frame.payload.length} B</dd>
       </dl>
 
       <div

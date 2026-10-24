@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
 import type * as monaco from "monaco-editor";
+import { useEffect, useRef, useState } from "react";
 import { LUA_SNIPPETS } from "./snippets";
 
 export interface ScriptEditorProps {
@@ -37,7 +37,7 @@ export default function ScriptEditor({
   onErrorLine,
   readOnly = false,
 }: ScriptEditorProps) {
-  const hostRef = useRef<HTMLDivElement>(null);
+  const hostRef = useRef<HTMLElement | null>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
@@ -45,6 +45,7 @@ export default function ScriptEditor({
   onErrorLineRef.current = onErrorLine;
   const [state, setState] = useState<LoadState>("loading");
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-once by design; value/readOnly flow through the model and options sync below.
   useEffect(() => {
     let cancelled = false;
     let editor: monaco.editor.IStandaloneCodeEditor | null = null;
@@ -63,33 +64,28 @@ export default function ScriptEditor({
         if (cancelled || !hostRef.current) return;
 
         if (!snippetsRegistered) {
-          snippetDisposable = monacoApi.languages.registerCompletionItemProvider(
-            "lua",
-            {
-              triggerCharacters: [".", ":"],
-              provideCompletionItems: (model, position) => {
-                const word = model.getWordUntilPosition(position);
-                const range = {
-                  startLineNumber: position.lineNumber,
-                  endLineNumber: position.lineNumber,
-                  startColumn: word.startColumn,
-                  endColumn: word.endColumn,
-                };
-                return {
-                  suggestions: LUA_SNIPPETS.map((s) => ({
-                    label: s.label,
-                    kind: monacoApi.languages.CompletionItemKind.Snippet,
-                    detail: s.detail,
-                    insertText: s.body,
-                    insertTextRules:
-                      monacoApi.languages.CompletionItemInsertTextRule
-                        .InsertAsSnippet,
-                    range,
-                  })),
-                };
-              },
+          snippetDisposable = monacoApi.languages.registerCompletionItemProvider("lua", {
+            triggerCharacters: [".", ":"],
+            provideCompletionItems: (model, position) => {
+              const word = model.getWordUntilPosition(position);
+              const range = {
+                startLineNumber: position.lineNumber,
+                endLineNumber: position.lineNumber,
+                startColumn: word.startColumn,
+                endColumn: word.endColumn,
+              };
+              return {
+                suggestions: LUA_SNIPPETS.map((s) => ({
+                  label: s.label,
+                  kind: monacoApi.languages.CompletionItemKind.Snippet,
+                  detail: s.detail,
+                  insertText: s.body,
+                  insertTextRules: monacoApi.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                  range,
+                })),
+              };
             },
-          );
+          });
           snippetsRegistered = true;
         }
 
@@ -122,7 +118,6 @@ export default function ScriptEditor({
       void snippetDisposable;
     };
     // Mount-once: value/readOnly flow through the model/options refs below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Push external value changes (script switching) into the model.
@@ -159,7 +154,7 @@ export default function ScriptEditor({
           Loading editor…
         </div>
       )}
-      <div ref={hostRef} className="h-full w-full" aria-label="Lua script editor" />
+      <section ref={hostRef} aria-label="Lua script editor" className="h-full w-full" />
     </div>
   );
 }
