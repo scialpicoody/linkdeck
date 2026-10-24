@@ -14,7 +14,7 @@ import (
 // future mygo.Bind (NOT bound in main.go; the integrator owns binding).
 //
 // MaxRetries caps reconnect attempts after the initial dial: 0 (default)
-// retries forever. BaseBackoffMs/MaxBackoffMs tune the capped exponential
+// retries forever and negative disables reconnect. BaseBackoffMs/MaxBackoffMs tune the capped exponential
 // backoff (defaults 100/5000); ConnectTimeoutMs bounds each dial (default
 // 5000). HeartbeatMs <= 0 (default) disables the heartbeat; otherwise the
 // client sends HeartbeatPayload (base64 over bindings) every HeartbeatMs.
@@ -39,8 +39,13 @@ type ConnInfo struct {
 
 // ListenRequest asks the service to start a listen server.
 type ListenRequest struct {
-	Name    string `json:"name"`
-	Address string `json:"address"`
+	Name    string       `json:"name"`
+	Address string       `json:"address"`
+	Framing framing.Spec `json:"framing"`
+	// Stream makes accepted connections first-class UI channels by starting
+	// a Manager read loop for each one. Script-owned servers leave it false
+	// and consume connections through Accept.
+	Stream bool `json:"stream"`
 }
 
 // ListenInfo describes a bound server.
@@ -52,10 +57,13 @@ type ListenInfo struct {
 // ChannelInfo is the List element: every client, server, and accepted
 // server connection in one JSON-friendly row.
 type ChannelInfo struct {
-	Name    string    `json:"name"`
-	Kind    string    `json:"kind"` // "tcp-client" | "tcp-server" | "tcp-conn"
-	Address string    `json:"address"`
-	State   ConnState `json:"state,omitempty"`
+	Name     string    `json:"name"`
+	Kind     string    `json:"kind"` // "tcp-client" | "tcp-server" | "tcp-conn"
+	Address  string    `json:"address"`
+	Parent   string    `json:"parent,omitempty"`
+	State    ConnState `json:"state,omitempty"`
+	Error    string    `json:"error,omitempty"`
+	Attempts int       `json:"attempts,omitempty"`
 }
 
 // TcpService owns dial clients and listen servers by name, mirroring the
@@ -98,16 +106,25 @@ func (s *TcpService) List() ([]ChannelInfo, error) {
 	defer s.mu.Unlock()
 	var out []ChannelInfo
 	for name, c := range s.clients {
-		out = append(out, ChannelInfo{Name: name, Kind: "tcp-client", Address: c.addr, State: c.Status()})
+		state, attempts, lastErr := c.Snapshot()
+		out = append(out, ChannelInfo{
+			Name: name, Kind: "tcp-client", Address: c.addr,
+			State: state, Error: lastErr, Attempts: attempts,
+		})
 	}
 	for name, srv := range s.servers {
 		addr := ""
 		if a := srv.Addr(); a != nil {
 			addr = a.String()
 		}
-		out = append(out, ChannelInfo{Name: name, Kind: "tcp-server", Address: addr})
+		out = append(out, ChannelInfo{
+			Name: name, Kind: "tcp-server", Address: addr, State: StateListening,
+		})
 		for _, id := range srv.Conns() {
-			out = append(out, ChannelInfo{Name: id, Kind: "tcp-conn", Address: addr})
+			out = append(out, ChannelInfo{
+				Name: id, Kind: "tcp-conn", Parent: name,
+				Address: srv.RemoteAddr(id), State: StateConnected,
+			})
 		}
 	}
 	return out, nil
@@ -194,6 +211,47 @@ type clientSource struct{ client *Client }
 // Read implements stream.Source.
 func (cs clientSource) Read(maxLen int) ([]byte, error) { return cs.client.Recv(maxLen) }
 
+// serverSource adapts one accepted connection. Any read failure is terminal
+// for that peer, so the Manager releases the channel slot even though the
+// listener remains open.
+type serverSource struct {
+	server *Server
+	id     string
+}
+
+func (ss serverSource) Read(maxLen int) ([]byte, error) {
+	data, err := ss.server.Recv(ss.id, maxLen)
+	if err != nil {
+		return nil, stream.ErrSourceClosed
+	}
+	return data, nil
+}
+
+// streamServer consumes accepted connections for a UI-owned listener and
+// starts one Manager read loop per peer. Script-owned servers leave
+// ListenRequest.Stream false and keep using Accept directly.
+func (s *TcpService) streamServer(
+	srv *Server,
+	mgr *stream.Manager,
+	spec framing.Spec,
+) {
+	for {
+		id, err := srv.Accept(-1)
+		if err != nil {
+			return
+		}
+		framer, err := framing.New(spec)
+		if err != nil {
+			_ = srv.CloseConn(id)
+			continue
+		}
+		if err := mgr.Start(id, serverSource{server: srv, id: id}, framer); err != nil {
+			_ = srv.CloseConn(id)
+			continue
+		}
+	}
+}
+
 // Send writes data to the named client; fails fast while unconnected.
 func (s *TcpService) Send(name string, data []byte) (int, error) {
 	c, err := s.lookupClient(name)
@@ -226,6 +284,14 @@ func (s *TcpService) Listen(req ListenRequest) (ListenInfo, error) {
 	if req.Name == "" {
 		return ListenInfo{}, errors.New("tcp: server name is empty")
 	}
+	spec := req.Framing
+	if spec.Kind == "" {
+		spec = framing.DefaultSpec()
+	}
+	_, err := framing.New(spec)
+	if err != nil {
+		return ListenInfo{}, fmt.Errorf("tcp: framing: %w", err)
+	}
 	s.mu.Lock()
 	if _, dup := s.servers[req.Name]; dup {
 		s.mu.Unlock()
@@ -243,7 +309,11 @@ func (s *TcpService) Listen(req ListenRequest) (ListenInfo, error) {
 		return ListenInfo{}, fmt.Errorf("tcp: server %s is already listening", req.Name)
 	}
 	s.servers[req.Name] = srv
+	stream := s.stream
 	s.mu.Unlock()
+	if req.Stream && stream != nil {
+		go s.streamServer(srv, stream, spec)
+	}
 	return ListenInfo{Name: req.Name, Address: srv.Addr().String()}, nil
 }
 
@@ -308,7 +378,14 @@ func (s *TcpService) ServerClose(server, id string) error {
 	if err != nil {
 		return err
 	}
-	return srv.CloseConn(id)
+	s.mu.Lock()
+	mgr := s.stream
+	s.mu.Unlock()
+	err = srv.CloseConn(id)
+	if mgr != nil {
+		mgr.Stop(id)
+	}
+	return err
 }
 
 // Unlisten shuts the named server and all its connections.
@@ -318,11 +395,19 @@ func (s *TcpService) Unlisten(server string) error {
 	if ok {
 		delete(s.servers, server)
 	}
+	mgr := s.stream
 	s.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("tcp: server %s is not listening", server)
 	}
-	return srv.Close()
+	ids := srv.Conns()
+	err := srv.Close()
+	if mgr != nil {
+		for _, id := range ids {
+			mgr.Stop(id)
+		}
+	}
+	return err
 }
 
 func (s *TcpService) lookupClient(name string) (*Client, error) {

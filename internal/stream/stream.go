@@ -258,6 +258,10 @@ func (m *Manager) runLoop(ctx context.Context, channel string, src Source, st *c
 		}
 		chunk, err := src.Read(readMaxLen)
 		if err != nil {
+			if errors.Is(err, ErrSourceClosed) {
+				m.removeChannel(channel, st)
+				return
+			}
 			select {
 			case <-ctx.Done():
 				return
@@ -291,6 +295,15 @@ func (m *Manager) runLoop(ctx context.Context, channel string, src Source, st *c
 			m.enqueue(Batch{Channel: channel, Frames: unmatched})
 		}
 	}
+}
+
+func (m *Manager) removeChannel(channel string, st *channelState) {
+	m.chMu.Lock()
+	if current, ok := m.channels[channel]; ok && current == st {
+		delete(m.channels, channel)
+	}
+	m.chMu.Unlock()
+	st.finish()
 }
 
 func (m *Manager) reportFramingError(channel string, err error) {

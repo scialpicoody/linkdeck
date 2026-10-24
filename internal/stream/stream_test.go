@@ -328,3 +328,28 @@ func TestFramingErrorReportedWithoutLosingFrames(t *testing.T) {
 	}
 	close(src.unblock)
 }
+
+func TestTerminalSourceReleasesChannelSlot(t *testing.T) {
+	pool := script.NewPool()
+	defer pool.Close()
+	m := NewManager(pool, nil)
+	defer m.Close()
+
+	src := &scriptSource{errAfter: ErrSourceClosed, unblock: make(chan struct{})}
+	if err := m.Start("peer", src, newDelim(t)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "terminal source cleanup", func() bool {
+		m.chMu.Lock()
+		defer m.chMu.Unlock()
+		_, exists := m.channels["peer"]
+		return !exists
+	})
+
+	// The same backend id can be reused after a terminal peer closes.
+	src2 := &scriptSource{unblock: make(chan struct{})}
+	defer close(src2.unblock)
+	if err := m.Start("peer", src2, newDelim(t)); err != nil {
+		t.Fatalf("reuse channel slot: %v", err)
+	}
+}

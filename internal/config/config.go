@@ -14,8 +14,10 @@ import (
 
 // Transports known to presets.
 const (
-	TransportSerial = "serial"
-	TransportTCP    = "tcp"
+	TransportSerial    = "serial"
+	TransportTCP       = "tcp" // legacy alias for tcp-client
+	TransportTCPClient = "tcp-client"
+	TransportTCPServer = "tcp-server"
 )
 
 // Default open parameters applied when neither preset nor explicit args
@@ -59,15 +61,18 @@ type ReconnectConfig struct {
 // read timeout, and the TCP reconnect policy. Zero-valued fields mean
 // "unset" and fall back to defaults under Resolve.
 type Preset struct {
-	Transport     string          `yaml:"transport,omitempty"`
-	Endpoint      string          `yaml:"endpoint,omitempty"`
-	Baud          int             `yaml:"baud,omitempty"`
-	DataBits      int             `yaml:"dataBits,omitempty"`
-	Parity        string          `yaml:"parity,omitempty"`
-	StopBits      string          `yaml:"stopBits,omitempty"`
-	Framing       FramingConfig   `yaml:"framing,omitempty"`
-	ReadTimeoutMs int             `yaml:"readTimeoutMs,omitempty"`
-	Reconnect     ReconnectConfig `yaml:"reconnect,omitempty"`
+	Transport        string          `yaml:"transport,omitempty"`
+	Endpoint         string          `yaml:"endpoint,omitempty"`
+	Baud             int             `yaml:"baud,omitempty"`
+	DataBits         int             `yaml:"dataBits,omitempty"`
+	Parity           string          `yaml:"parity,omitempty"`
+	StopBits         string          `yaml:"stopBits,omitempty"`
+	Framing          FramingConfig   `yaml:"framing,omitempty"`
+	ReadTimeoutMs    int             `yaml:"readTimeoutMs,omitempty"`
+	Reconnect        ReconnectConfig `yaml:"reconnect,omitempty"`
+	ConnectTimeoutMs int             `yaml:"connectTimeoutMs,omitempty"`
+	HeartbeatMs      int             `yaml:"heartbeatMs,omitempty"`
+	HeartbeatPayload string          `yaml:"heartbeatPayload,omitempty"`
 }
 
 // Config is the schema-v1 document: named channel presets plus ordered
@@ -239,6 +244,15 @@ func Resolve(preset Preset, explicit ExplicitArgs) Preset {
 	if preset.ReadTimeoutMs != 0 {
 		out.ReadTimeoutMs = preset.ReadTimeoutMs
 	}
+	if preset.ConnectTimeoutMs != 0 {
+		out.ConnectTimeoutMs = preset.ConnectTimeoutMs
+	}
+	if preset.HeartbeatMs != 0 {
+		out.HeartbeatMs = preset.HeartbeatMs
+	}
+	if preset.HeartbeatPayload != "" {
+		out.HeartbeatPayload = preset.HeartbeatPayload
+	}
 	// Reconnect is a plain struct, so overlay field by field: a nonzero
 	// preset field overrides the default. Enabled is boolean (no nonzero
 	// test), so the preset value always applies at this layer.
@@ -318,7 +332,9 @@ func NormalizePresetName(name string) (string, error) {
 func ValidatePreset(preset Preset) error {
 	if preset.Transport != "" &&
 		preset.Transport != TransportSerial &&
-		preset.Transport != TransportTCP {
+		preset.Transport != TransportTCP &&
+		preset.Transport != TransportTCPClient &&
+		preset.Transport != TransportTCPServer {
 		return fmt.Errorf("config: unknown preset transport %q", preset.Transport)
 	}
 	if preset.Baud < 0 {
@@ -329,6 +345,9 @@ func ValidatePreset(preset Preset) error {
 	}
 	if preset.ReadTimeoutMs < 0 {
 		return errors.New("config: preset read timeout must not be negative")
+	}
+	if preset.ConnectTimeoutMs < 0 || preset.HeartbeatMs < 0 {
+		return errors.New("config: preset TCP timers must not be negative")
 	}
 	if preset.Reconnect.InitialMs < 0 || preset.Reconnect.MaxMs < 0 || preset.Reconnect.MaxAttempts < 0 {
 		return errors.New("config: preset reconnect values must not be negative")

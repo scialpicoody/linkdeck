@@ -1,4 +1,14 @@
-import { Cable, ChevronLeft, ChevronRight, Plus, Power, Settings2 } from "lucide-react";
+import {
+  Cable,
+  ChevronLeft,
+  ChevronRight,
+  Network,
+  Plus,
+  Power,
+  Server,
+  Settings2,
+  Unplug,
+} from "lucide-react";
 import { useState } from "react";
 import { type Channel, stateColor } from "../../lib/channels";
 import { cn } from "../../lib/utils";
@@ -12,6 +22,13 @@ interface SidebarProps {
   onAdd: () => void;
   onEdit: (id: string) => void;
   onClose: (id: string) => void;
+}
+
+function ChannelIcon({ kind }: { kind: Channel["kind"] }) {
+  if (kind === "tcp-server") return <Server size={12} />;
+  if (kind === "tcp-client") return <Network size={12} />;
+  if (kind === "tcp-accepted") return <Unplug size={12} />;
+  return <Cable size={12} />;
 }
 
 export function Sidebar({
@@ -90,7 +107,7 @@ export function Sidebar({
               <div className="border border-dashed border-border bg-background/45 px-3 py-4">
                 <Cable size={18} className="text-muted-foreground" aria-hidden="true" />
                 <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                  No channels open. Open a serial port to start capturing frames.
+                  No channels open. Connect serial or TCP to start capturing frames.
                 </p>
                 {listError !== null && (
                   <p className="mt-2 text-[11px] leading-snug text-danger">{listError}</p>
@@ -139,7 +156,7 @@ export function Sidebar({
                       className="grid size-6 shrink-0 place-items-center border border-border bg-background/60"
                       aria-hidden="true"
                     >
-                      <Cable size={12} />
+                      <ChannelIcon kind={channel.kind} />
                     </span>
                     {!collapsed && (
                       <span className="min-w-0 flex-1">
@@ -168,15 +185,17 @@ export function Sidebar({
                   </button>
                   {!collapsed && (
                     <div className="absolute top-1/2 right-1 flex -translate-y-1/2 bg-card/95 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">
-                      <button
-                        type="button"
-                        onClick={() => onEdit(channel.id)}
-                        title={`Settings for ${channel.name}`}
-                        aria-label={`Settings for ${channel.name}`}
-                        className="grid size-6 place-items-center text-muted-foreground hover:text-foreground"
-                      >
-                        <Settings2 size={12} aria-hidden="true" />
-                      </button>
+                      {channel.kind !== "tcp-accepted" && (
+                        <button
+                          type="button"
+                          onClick={() => onEdit(channel.id)}
+                          title={`Settings for ${channel.name}`}
+                          aria-label={`Settings for ${channel.name}`}
+                          className="grid size-6 place-items-center text-muted-foreground hover:text-foreground"
+                        >
+                          <Settings2 size={12} aria-hidden="true" />
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => void onClose(channel.id)}

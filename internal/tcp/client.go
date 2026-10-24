@@ -23,6 +23,7 @@ const (
 	StateConnecting   ConnState = "connecting"
 	StateConnected    ConnState = "connected"
 	StateReconnecting ConnState = "reconnecting"
+	StateListening    ConnState = "listening"
 	StateClosed       ConnState = "closed"
 )
 
@@ -33,9 +34,9 @@ var errUnconnected = errors.New("tcp: not connected")
 // ClientOptions configures a Client. Zero values take documented defaults.
 // MaxRetries counts reconnect attempts after the initial dial fails or a
 // live connection drops: 0 (default) means retry forever, N > 0 caps the
-// attempts before the client moves to closed. HeartbeatMs <= 0 disables the
-// heartbeat; otherwise the client sends HeartbeatPayload every HeartbeatMs
-// while connected.
+// attempts before the client moves to closed, and N < 0 disables reconnect.
+// HeartbeatMs <= 0 disables the heartbeat; otherwise the client sends
+// HeartbeatPayload every HeartbeatMs while connected.
 type ClientOptions struct {
 	ConnectTimeoutMs int
 	MaxRetries       int
@@ -64,6 +65,9 @@ type Client struct {
 	conn    net.Conn
 	state   ConnState
 	stateMu sync.RWMutex
+	errMu   sync.RWMutex
+	lastErr string
+	attempt atomic.Int64
 	// residue holds partial stream bytes awaiting framing. It is cleared on
 	// every successful (re)connect. The framing slice consumes full frames
 	// out of band; this buffer only guarantees no stale half-frame leaks
@@ -141,10 +145,18 @@ func Dial(name, addr string, opts ClientOptions) (*Client, error) {
 		c.conn = conn
 		c.mu.Unlock()
 		c.setState(StateConnected)
+		c.setLastError(nil)
 		c.startHeartbeat()
 		return c, nil
 	}
+	if c.maxRetries < 0 {
+		c.closed.Store(true)
+		c.setState(StateClosed)
+		c.setLastError(err)
+		return nil, fmt.Errorf("tcp: dial %s: %w", addr, err)
+	}
 	c.setState(StateReconnecting)
+	c.setLastError(err)
 	c.startReconnectLoop(0)
 	return c, nil
 }
@@ -163,6 +175,28 @@ func (c *Client) setState(s ConnState) {
 	c.stateMu.Lock()
 	c.state = s
 	c.stateMu.Unlock()
+}
+
+func (c *Client) setLastError(err error) {
+	c.errMu.Lock()
+	if err == nil {
+		c.lastErr = ""
+	} else {
+		c.lastErr = err.Error()
+	}
+	c.errMu.Unlock()
+}
+
+// Snapshot reports the state, consecutive reconnect attempt count, and last
+// dial/read error for polling fallback and diagnostics.
+func (c *Client) Snapshot() (ConnState, int, string) {
+	c.stateMu.RLock()
+	state := c.state
+	c.stateMu.RUnlock()
+	c.errMu.RLock()
+	lastErr := c.lastErr
+	c.errMu.RUnlock()
+	return state, int(c.attempt.Load()), lastErr
 }
 
 // ResetFraming clears frame residue without touching the connection. Hook
@@ -197,6 +231,7 @@ func (c *Client) Send(data []byte) (int, error) {
 	}
 	n, err := conn.Write(data)
 	if err != nil {
+		c.setLastError(err)
 		go c.handleDrop()
 		return n, fmt.Errorf("tcp: send on %s: %w", c.name, err)
 	}
@@ -224,6 +259,7 @@ func (c *Client) Recv(maxLen int) ([]byte, error) {
 	buf := make([]byte, maxLen)
 	n, err := conn.Read(buf)
 	if err != nil {
+		c.setLastError(err)
 		if errors.Is(err, io.EOF) || isConnReset(err) {
 			go c.handleDrop()
 		}
@@ -277,6 +313,12 @@ func (c *Client) handleDrop() {
 	c.residue = nil
 	c.mu.Unlock()
 	c.stopHeartbeat()
+	if c.maxRetries < 0 {
+		c.closed.Store(true)
+		c.setState(StateClosed)
+		close(c.done)
+		return
+	}
 	if c.Status() != StateReconnecting {
 		c.setState(StateReconnecting)
 	}
@@ -310,6 +352,7 @@ func (c *Client) startReconnectLoop(firstAttempt int) {
 				return
 			}
 			if c.maxRetries > 0 && attempt >= c.maxRetries {
+				c.attempt.Store(int64(attempt))
 				c.setState(StateClosed)
 				c.closed.Store(true)
 				return
@@ -327,17 +370,21 @@ func (c *Client) startReconnectLoop(firstAttempt int) {
 			d := net.Dialer{Timeout: c.connectTimeout}
 			conn, err := d.Dial("tcp", c.addr)
 			if err == nil {
+				c.attempt.Store(0)
 				c.mu.Lock()
 				c.conn = conn
 				c.residue = nil // clear frame residue, keep matchers (above)
 				c.mu.Unlock()
 				c.setState(StateConnected)
+				c.setLastError(nil)
 				c.startHeartbeat()
 				if hook := c.reconnectHook(); hook != nil {
 					hook()
 				}
 				return
 			}
+			c.attempt.Store(int64(attempt + 1))
+			c.setLastError(err)
 		}
 	}()
 }

@@ -13,7 +13,10 @@ export interface ChannelInfo {
   /** "tcp-client" | "tcp-server" | "tcp-conn" */
   kind: string;
   address: string;
+  parent?: string;
   state?: ConnState;
+  error?: string;
+  attempts?: number;
 }
 
 /** ConnInfo describes one client channel. */
@@ -32,7 +35,7 @@ export interface ConnInfo {
  * 	                background with exponential backoff + jitter.
  * 	closed        — Close called, or retries exhausted. Terminal.
  */
-export type ConnState = "connecting" | "connected" | "reconnecting" | "closed";
+export type ConnState = "connecting" | "connected" | "reconnecting" | "listening" | "closed";
 
 export interface FrameDTO {
   channel: string;
@@ -67,6 +70,13 @@ export interface ListenInfo {
 export interface ListenRequest {
   name: string;
   address: string;
+  framing: Spec;
+  /**
+   * Stream makes accepted connections first-class UI channels by starting
+   * a Manager read loop for each one. Script-owned servers leave it false
+   * and consume connections through Accept.
+   */
+  stream: boolean;
 }
 
 export interface Manager {}
@@ -134,6 +144,9 @@ export interface Preset {
   Framing: FramingConfig;
   ReadTimeoutMs: number;
   Reconnect: ReconnectConfig;
+  ConnectTimeoutMs: number;
+  HeartbeatMs: number;
+  HeartbeatPayload: string;
 }
 
 export interface ReconnectConfig {
@@ -205,6 +218,16 @@ export interface TcpOpenRequest {
   framing: Spec;
 }
 
+export interface TransportStatus {
+  key: string;
+  kind: string;
+  parent?: string;
+  endpoint: string;
+  state: string;
+  error?: string;
+  attempts?: number;
+}
+
 export interface WorkspaceDocument {
   path: string;
   name: string;
@@ -269,6 +292,10 @@ export const SerialService = {
    */
   open(req: OpenRequest): Promise<PortInfo> {
     return call("SerialService.Open", req);
+  },
+  /** OpenNames returns the names of ports currently open through this service. */
+  openNames(): Promise<string[]> {
+    return call("SerialService.OpenNames");
   },
   /** Recv reads up to maxLen bytes from the named open port. */
   recv(name: string, maxLen: number): Promise<string> {
@@ -502,6 +529,11 @@ export const events = {
    * cumulative per-channel counts to the workbench.
    */
   streamErrors: event<FramingError>("stream-errors"),
+  /**
+   * ChannelStatus carries batched transport lifecycle transitions. A 3s
+   * frontend poll is the fallback when an event is missed.
+   */
+  channelStatus: event<TransportStatus[]>("channel-status"),
   /** ScriptOutput carries structured rows scoped to their run/script. */
   scriptOutput: event<OutputRow>("script-output"),
   /** ScriptRunStatus carries queued/running/final run-state transitions. */

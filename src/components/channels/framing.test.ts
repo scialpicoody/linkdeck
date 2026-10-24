@@ -53,6 +53,32 @@ describe("channel framing form", () => {
     ).toContain("size");
   });
 
+  it("validates TCP client and server endpoints without serial fields", () => {
+    expect(
+      validateChannelForm({
+        ...DEFAULT_CHANNEL_FORM,
+        transport: "tcp-client",
+        address: "127.0.0.1:9000",
+      }),
+    ).toBeNull();
+    expect(
+      validateChannelForm({
+        ...DEFAULT_CHANNEL_FORM,
+        transport: "tcp-server",
+        address: "localhost",
+      }),
+    ).toContain("host:port");
+    expect(
+      validateChannelForm({
+        ...DEFAULT_CHANNEL_FORM,
+        transport: "tcp-client",
+        address: "host:1",
+        reconnectInitialMs: 500,
+        reconnectMaxMs: 100,
+      }),
+    ).toContain("max delay");
+  });
+
   it("maps legacy delimiter presets to the dialog shape", () => {
     expect(
       framingFormFromPreset({

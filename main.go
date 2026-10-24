@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"runtime"
+	"sort"
 	"sync"
 	"time"
 
@@ -49,6 +51,10 @@ var Frames = mygo.NewEvent[[]script.FrameDTO]("frames")
 // StreamErrors carries non-fatal framing failures (oversize/checksum) and
 // cumulative per-channel counts to the workbench.
 var StreamErrors = mygo.NewEvent[stream.FramingError]("stream-errors")
+
+// ChannelStatus carries batched transport lifecycle transitions. A 3s
+// frontend poll is the fallback when an event is missed.
+var ChannelStatus = mygo.NewEvent[[]link.TransportStatus]("channel-status")
 
 // ScriptOutput carries structured rows scoped to their run/script.
 var ScriptOutput = mygo.NewEvent[script.OutputRow]("script-output")
@@ -308,6 +314,52 @@ func (a *StreamAPI) Dropped(channel string) uint64 {
 	return mgr.Dropped(channel)
 }
 
+// transportStatuses snapshots open serial ports and every TCP client,
+// listener, and accepted connection. It is safe to call while channels are
+// being opened or closed.
+func transportStatuses(
+	serialSvc *serial.SerialService,
+	tcpSvc *tcp.TcpService,
+) []link.TransportStatus {
+	out := make([]link.TransportStatus, 0)
+	discovered, discoveryErr := serialSvc.List()
+	available := make(map[string]struct{}, len(discovered))
+	for _, port := range discovered {
+		available[port.Name] = struct{}{}
+	}
+	for _, name := range serialSvc.OpenNames() {
+		status := link.TransportStatus{
+			Key: name, Kind: "serial", Endpoint: name, State: "connected",
+		}
+		if discoveryErr == nil {
+			if _, ok := available[name]; !ok {
+				status.State = "disconnected"
+				status.Error = "serial device removed"
+			}
+		}
+		if _, err := serialSvc.Status(name); err != nil && status.State == "connected" {
+			status.State = "error"
+			status.Error = err.Error()
+		}
+		out = append(out, status)
+	}
+	if rows, err := tcpSvc.List(); err == nil {
+		for _, row := range rows {
+			out = append(out, link.TransportStatus{
+				Key: row.Name, Kind: row.Kind, Parent: row.Parent, Endpoint: row.Address,
+				State: string(row.State), Error: row.Error, Attempts: row.Attempts,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind == out[j].Kind {
+			return out[i].Key < out[j].Key
+		}
+		return out[i].Kind < out[j].Kind
+	})
+	return out
+}
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -368,6 +420,22 @@ func main() {
 		streamAPI.attach(mgr)
 		serialSvc.AttachStream(mgr)
 		tcpSvc.AttachStream(mgr)
+		go func() {
+			last := ""
+			ticker := time.NewTicker(500 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				statuses := transportStatuses(serialSvc, tcpSvc)
+				raw, _ := json.Marshal(statuses)
+				if signature := string(raw); signature != last {
+					last = signature
+					if err := ChannelStatus.Emit(win, statuses); err != nil {
+						return
+					}
+				}
+				<-ticker.C
+			}
+		}()
 		go func() {
 			for t := range time.Tick(time.Second) {
 				if Tick.Emit(win, t) != nil {

@@ -11,6 +11,11 @@ var (
 	errClosedManager = errors.New("stream: manager is closed")
 )
 
+// ErrSourceClosed tells the read loop that its transport has reached a
+// terminal state. Reconnecting transports keep returning ordinary errors;
+// accepted TCP connections use this to release their channel slot.
+var ErrSourceClosed = errors.New("stream: source closed")
+
 // dupError reports a Start for an already-started channel.
 type dupError struct{ channel string }
 

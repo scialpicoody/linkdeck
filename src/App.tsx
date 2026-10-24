@@ -32,7 +32,10 @@ import {
 import { HintsProvider } from "./components/ui/Hint";
 import {
   type Channel,
+  type ChannelConfig,
+  channelStateFromStatus,
   createChannelId,
+  type NewChannel,
   type SerialChannelConfig,
   useChannels,
 } from "./lib/channels";
@@ -61,12 +64,36 @@ import {
   SerialService,
   type SessionInfo,
   StreamAPI,
+  TcpService,
+  type TransportStatus,
   WorkspaceAPI,
   type WorkspaceFile,
 } from "./mygo";
 
-function configFromForm(value: ChannelFormValue): SerialChannelConfig {
+function configFromForm(value: ChannelFormValue): ChannelConfig {
+  if (value.transport === "tcp-client") {
+    return {
+      transport: "tcp-client",
+      address: value.address.trim(),
+      connectTimeoutMs: value.connectTimeoutMs,
+      reconnectEnabled: value.reconnectEnabled,
+      reconnectInitialMs: value.reconnectInitialMs,
+      reconnectMaxMs: value.reconnectMaxMs,
+      reconnectMaxAttempts: value.reconnectMaxAttempts,
+      heartbeatMs: value.heartbeatMs,
+      heartbeatPayload: value.heartbeatPayload,
+      framing: toFramingSpec(value),
+    };
+  }
+  if (value.transport === "tcp-server") {
+    return {
+      transport: "tcp-server",
+      address: value.address.trim(),
+      framing: toFramingSpec(value),
+    };
+  }
   return {
+    transport: "serial",
     baudRate: value.baudRate,
     dataBits: value.dataBits,
     parity: value.parity,
@@ -90,8 +117,8 @@ function openRequest(port: string, config: SerialChannelConfig): OpenRequest {
 
 function presetFromForm(value: ChannelFormValue): Preset {
   return {
-    Transport: "serial",
-    Endpoint: value.port.trim(),
+    Transport: value.transport,
+    Endpoint: value.transport === "serial" ? value.port.trim() : value.address.trim(),
     Baud: value.baudRate,
     DataBits: value.dataBits,
     Parity: value.parity,
@@ -102,19 +129,54 @@ function presetFromForm(value: ChannelFormValue): Preset {
       Spec: toFramingSpec(value),
     },
     ReadTimeoutMs: value.readTimeoutMs,
+    ConnectTimeoutMs: value.connectTimeoutMs,
+    HeartbeatMs: value.heartbeatMs,
+    HeartbeatPayload: value.heartbeatPayload,
     Reconnect: {
-      Enabled: false,
-      InitialMs: 100,
-      MaxMs: 5000,
-      MaxAttempts: 0,
+      Enabled: value.reconnectEnabled,
+      InitialMs: value.reconnectInitialMs,
+      MaxMs: value.reconnectMaxMs,
+      MaxAttempts: value.reconnectMaxAttempts,
     },
   };
 }
 
 function formFromChannel(channel: Channel): ChannelFormValue {
   const config = channel.config;
+  if (config.transport === "tcp-client") {
+    return {
+      ...DEFAULT_CHANNEL_FORM,
+      transport: "tcp-client",
+      address: config.address,
+      connectTimeoutMs: config.connectTimeoutMs,
+      reconnectEnabled: config.reconnectEnabled,
+      reconnectInitialMs: config.reconnectInitialMs,
+      reconnectMaxMs: config.reconnectMaxMs,
+      reconnectMaxAttempts: config.reconnectMaxAttempts,
+      heartbeatMs: config.heartbeatMs,
+      heartbeatPayload: config.heartbeatPayload,
+      ...framingFormFromSpec(config.framing),
+    };
+  }
+  if (config.transport === "tcp-server") {
+    return {
+      ...DEFAULT_CHANNEL_FORM,
+      transport: "tcp-server",
+      address: config.address,
+      ...framingFormFromSpec(config.framing),
+    };
+  }
+  if (config.transport === "tcp-accepted") {
+    return {
+      ...DEFAULT_CHANNEL_FORM,
+      transport: "tcp-server",
+      address: channel.endpoint,
+      ...framingFormFromSpec(config.framing),
+    };
+  }
   return {
     ...DEFAULT_CHANNEL_FORM,
+    transport: "serial",
     port: channel.endpoint,
     baudRate: config.baudRate,
     dataBits: config.dataBits,
@@ -133,6 +195,92 @@ function isNotOpenError(error: unknown): boolean {
   return /not open|unknown/i.test(messageOf(error));
 }
 
+function heartbeatBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+/** Open one form submission and return the authoritative channel fields. */
+async function openConfiguredChannel(
+  id: string,
+  value: ChannelFormValue,
+): Promise<Omit<NewChannel, "id">> {
+  const config = configFromForm(value);
+  if (config.transport === "serial") {
+    const endpoint = value.port.trim();
+    await SerialService.open(openRequest(endpoint, config));
+    return {
+      name: endpoint,
+      endpoint,
+      backendKey: endpoint,
+      kind: "serial",
+      config,
+      state: "connected",
+    };
+  }
+  if (config.transport === "tcp-server") {
+    const info = await TcpService.listen({
+      name: id,
+      address: config.address,
+      framing: config.framing,
+      stream: true,
+    });
+    const saved: ChannelConfig = { ...config, address: info.address };
+    return {
+      name: info.address,
+      endpoint: info.address,
+      backendKey: info.name,
+      kind: "tcp-server",
+      config: saved,
+      state: "listening",
+    };
+  }
+  if (config.transport !== "tcp-client") {
+    throw new Error("Accepted TCP connections cannot be opened directly.");
+  }
+  const info = await TcpService.open({
+    name: id,
+    address: config.address,
+    connectTimeoutMs: config.connectTimeoutMs,
+    maxRetries: config.reconnectEnabled ? config.reconnectMaxAttempts : -1,
+    baseBackoffMs: config.reconnectInitialMs,
+    maxBackoffMs: config.reconnectMaxMs,
+    heartbeatMs: config.heartbeatMs,
+    heartbeatPayload: heartbeatBase64(config.heartbeatPayload),
+    framing: config.framing,
+  });
+  return {
+    name: config.address,
+    endpoint: info.address || config.address,
+    backendKey: info.name || id,
+    kind: "tcp-client",
+    config,
+    state: channelStateFromStatus("tcp-client", info.state),
+  };
+}
+
+async function reopenSavedChannel(id: string, channel: Channel): Promise<Omit<NewChannel, "id">> {
+  return openConfiguredChannel(id, formFromChannel(channel));
+}
+
+async function closeChannelTransport(channel: Channel): Promise<void> {
+  if (channel.config.transport === "serial") {
+    await SerialService.close(channel.endpoint);
+    return;
+  }
+  if (channel.config.transport === "tcp-client") {
+    await TcpService.close(channel.backendKey);
+    return;
+  }
+  if (channel.config.transport === "tcp-server") {
+    await TcpService.unlisten(channel.backendKey);
+    return;
+  }
+  await TcpService.serverClose(channel.config.parentKey, channel.backendKey);
+}
+
 export default function App() {
   const {
     ports,
@@ -148,6 +296,7 @@ export default function App() {
     updateChannel,
     removeChannel,
     addTraffic,
+    applyTransportStatus,
   } = useChannels();
   const [framesByChannel, setFramesByChannel] = useState<Record<string, FrameBuffer>>({});
   const [droppedByChannel, setDroppedByChannel] = useState<Record<string, number>>({});
@@ -193,10 +342,18 @@ export default function App() {
       .then((all: Record<string, Preset>) => {
         const mapped: Record<string, ChannelFormValue> = {};
         for (const [name, p] of Object.entries(all)) {
+          const transport =
+            p.Transport === "tcp-server"
+              ? "tcp-server"
+              : p.Transport === "tcp" || p.Transport === "tcp-client"
+                ? "tcp-client"
+                : "serial";
           mapped[name] = {
             ...DEFAULT_CHANNEL_FORM,
             ...framingFormFromPreset(p.Framing),
-            port: p.Endpoint,
+            transport,
+            port: transport === "serial" ? p.Endpoint : "",
+            address: transport === "serial" ? DEFAULT_CHANNEL_FORM.address : p.Endpoint,
             baudRate: p.Baud,
             dataBits: (p.DataBits === 5 || p.DataBits === 6 || p.DataBits === 7
               ? p.DataBits
@@ -204,6 +361,13 @@ export default function App() {
             parity: (p.Parity ?? "none") as ChannelFormValue["parity"],
             stopBits: (p.StopBits ?? "1") as ChannelFormValue["stopBits"],
             readTimeoutMs: p.ReadTimeoutMs ?? 0,
+            connectTimeoutMs: p.ConnectTimeoutMs ?? 5000,
+            heartbeatMs: p.HeartbeatMs ?? 0,
+            heartbeatPayload: p.HeartbeatPayload ?? "",
+            reconnectEnabled: p.Reconnect.Enabled,
+            reconnectInitialMs: p.Reconnect.InitialMs || 100,
+            reconnectMaxMs: p.Reconnect.MaxMs || 5000,
+            reconnectMaxAttempts: p.Reconnect.MaxAttempts,
           };
         }
         setPresets(mapped);
@@ -294,13 +458,13 @@ export default function App() {
   // Live RX path: Go emits unmatched complete frames as base64 FrameDTOs.
   useEffect(() => {
     if (!isHostAvailable()) return;
-    const byEndpoint = new Map(channels.map((channel) => [channel.endpoint, channel]));
+    const byBackendKey = new Map(channels.map((channel) => [channel.backendKey, channel]));
     return events.frames.on((batch: FrameDTO[]) => {
       const byChannel = new Map<string, { endpoint: string; frames: Frame[] }>();
       let malformed = 0;
       for (const dto of batch) {
         if (dto.dir !== "rx" && dto.dir !== "tx") continue;
-        const channel = byEndpoint.get(dto.channel);
+        const channel = byBackendKey.get(dto.channel);
         if (channel === undefined) continue;
         try {
           const frame: Frame = {
@@ -308,7 +472,7 @@ export default function App() {
             payload: base64ToBytes(dto.payload),
             ts: dto.tsMillis,
           };
-          const entry = byChannel.get(channel.id) ?? { endpoint: channel.endpoint, frames: [] };
+          const entry = byChannel.get(channel.id) ?? { endpoint: channel.backendKey, frames: [] };
           entry.frames.push(frame);
           byChannel.set(channel.id, entry);
         } catch {
@@ -349,20 +513,27 @@ export default function App() {
   useEffect(() => {
     if (!isHostAvailable()) return;
     return events.streamErrors.on((error: FramingError) => {
-      const channel = channels.find((item) => item.endpoint === error.channel);
+      const channel = channels.find((item) => item.backendKey === error.channel);
       if (channel === undefined) return;
       setFramingErrorsByChannel((previous) => ({ ...previous, [channel.id]: error }));
     });
   }, [channels]);
+
+  useEffect(() => {
+    if (!isHostAvailable()) return;
+    return events.channelStatus.on((statuses: TransportStatus[]) => {
+      applyTransportStatus(statuses);
+    });
+  }, [applyTransportStatus]);
 
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
 
   const handleSend = useCallback(
     async (payload: SendPayload) => {
-      if (active === null || active.kind !== "serial") return;
+      if (active === null || active.kind === "tcp-server") return;
       const id = active.id;
-      const portName = active.endpoint;
+      const target = active.name;
       const { wire, bytes, error } = toWireString(payload);
       if (error !== null) {
         setSendError(error);
@@ -371,7 +542,13 @@ export default function App() {
       setSending(true);
       setSendError(null);
       try {
-        await SerialService.send(portName, wire);
+        if (active.config.transport === "serial") {
+          await SerialService.send(active.endpoint, wire);
+        } else if (active.config.transport === "tcp-client") {
+          await TcpService.send(active.backendKey, wire);
+        } else if (active.config.transport === "tcp-accepted") {
+          await TcpService.serverSend(active.config.parentKey, active.backendKey, wire);
+        }
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         // TX failure: red row in the frame table (not the script output) +
@@ -388,7 +565,7 @@ export default function App() {
           ]),
         }));
         setSendError(message);
-        toast.error(`Send to ${portName} failed`, { description: message });
+        toast.error(`Send to ${target} failed`, { description: message });
         return;
       } finally {
         setSending(false);
@@ -636,41 +813,67 @@ export default function App() {
     setFrameSelection(null);
   }, [active]);
 
+  const removeChannelArtifacts = useCallback(
+    (ids: string[]) => {
+      for (const id of ids) removeChannel(id);
+      setFramesByChannel((previous) => {
+        const next = { ...previous };
+        for (const id of ids) delete next[id];
+        return next;
+      });
+      setDroppedByChannel((previous) => {
+        const next = { ...previous };
+        for (const id of ids) delete next[id];
+        return next;
+      });
+      setFramingErrorsByChannel((previous) => {
+        const next = { ...previous };
+        for (const id of ids) delete next[id];
+        return next;
+      });
+    },
+    [removeChannel],
+  );
+
   // Create adds a channel only after the backend accepts the connection.
-  // Edit keeps the stable frontend id and rolls back a failed same-endpoint
-  // reopen to the last successful config.
+  // Edit keeps the stable frontend id, opens a different backend before
+  // closing the old one, and rolls back same-backend reopen failures.
   const handleChannelSubmit = useCallback(
     async (value: ChannelFormValue) => {
       if (!isHostAvailable()) throw new Error("No Go host: cannot open channels in browser mode.");
-      const endpoint = value.port.trim();
-      const config = configFromForm(value);
       if (channelDialog === null || channelDialog.mode === "create") {
-        const id = createChannelId("serial");
+        const id = createChannelId(value.transport);
+        const opened = await openConfiguredChannel(id, value);
         addChannel({
           id,
-          name: endpoint,
-          endpoint,
-          kind: "serial",
-          state: "connecting",
-          config,
+          ...opened,
         });
-        try {
-          await SerialService.open(openRequest(endpoint, config));
-          updateChannel(id, { state: "connected", error: undefined });
-        } catch (error) {
-          removeChannel(id);
-          throw error;
-        }
         return;
       }
 
       const existing = channels.find((channel) => channel.id === channelDialog.id);
       if (existing === undefined) throw new Error("Channel is no longer available.");
+      if (existing.kind === "tcp-accepted") {
+        throw new Error("Accepted TCP connections inherit their server settings.");
+      }
+      const ownedAcceptedIds =
+        existing.kind === "tcp-server"
+          ? channels
+              .filter(
+                (channel) =>
+                  channel.kind === "tcp-accepted" &&
+                  channel.config.transport === "tcp-accepted" &&
+                  channel.config.parentKey === existing.backendKey,
+              )
+              .map((channel) => channel.id)
+          : [];
 
-      if (existing.endpoint === endpoint) {
+      const nextConfig = configFromForm(value);
+      const nextBackendKey = nextConfig.transport === "serial" ? value.port.trim() : existing.id;
+      if (nextBackendKey === existing.backendKey) {
         updateChannel(existing.id, { state: "connecting", error: undefined });
         try {
-          await SerialService.close(endpoint).catch((error: unknown) => {
+          await closeChannelTransport(existing).catch((error: unknown) => {
             if (!isNotOpenError(error)) throw error;
           });
         } catch (error) {
@@ -678,20 +881,22 @@ export default function App() {
           throw error;
         }
         try {
-          await SerialService.open(openRequest(endpoint, config));
+          const opened = await openConfiguredChannel(existing.id, value);
           updateChannel(existing.id, {
-            name: endpoint,
-            endpoint,
-            config,
-            state: "connected",
+            ...opened,
             error: undefined,
           });
+          if (ownedAcceptedIds.length > 0) removeChannelArtifacts(ownedAcceptedIds);
           selectChannel(existing.id);
           return;
         } catch (openError) {
           try {
-            await SerialService.open(openRequest(existing.endpoint, existing.config));
-            updateChannel(existing.id, { state: "connected", error: undefined });
+            const restored = await reopenSavedChannel(existing.id, existing);
+            updateChannel(existing.id, {
+              ...restored,
+              state: "connected",
+              error: undefined,
+            });
           } catch (rollbackError) {
             updateChannel(existing.id, {
               state: "error",
@@ -701,42 +906,54 @@ export default function App() {
               `${messageOf(openError)}; rollback failed: ${messageOf(rollbackError)}`,
             );
           }
-          updateChannel(existing.id, { state: "connected", error: undefined });
           throw openError;
         }
       }
 
-      // Different endpoints can be opened before the old one closes.
-      await SerialService.open(openRequest(endpoint, config));
+      // Different backend keys can be opened before the old one closes.
+      const opened = await openConfiguredChannel(existing.id, value);
       try {
-        await SerialService.close(existing.endpoint).catch((error: unknown) => {
+        await closeChannelTransport(existing).catch((error: unknown) => {
           if (!isNotOpenError(error)) throw error;
         });
       } catch (closeError) {
-        await SerialService.close(endpoint).catch(() => {});
+        await closeChannelTransport({
+          ...existing,
+          ...opened,
+          config: opened.config,
+        }).catch(() => {});
         updateChannel(existing.id, { state: "error", error: messageOf(closeError) });
         throw new Error(
           `New endpoint opened, but the previous endpoint could not close: ${messageOf(closeError)}`,
         );
       }
       updateChannel(existing.id, {
-        name: endpoint,
-        endpoint,
-        config,
-        state: "connected",
+        ...opened,
         error: undefined,
       });
+      if (ownedAcceptedIds.length > 0) removeChannelArtifacts(ownedAcceptedIds);
       selectChannel(existing.id);
     },
-    [addChannel, channelDialog, channels, removeChannel, selectChannel, updateChannel],
+    [addChannel, channelDialog, channels, removeChannelArtifacts, selectChannel, updateChannel],
   );
 
   const handleCloseChannel = useCallback(
     async (id: string) => {
       const channel = channels.find((item) => item.id === id);
       if (channel === undefined) return;
+      const ownedAcceptedIds =
+        channel.kind === "tcp-server"
+          ? channels
+              .filter(
+                (candidate) =>
+                  candidate.kind === "tcp-accepted" &&
+                  candidate.config.transport === "tcp-accepted" &&
+                  candidate.config.parentKey === channel.backendKey,
+              )
+              .map((candidate) => candidate.id)
+          : [];
       try {
-        await SerialService.close(channel.endpoint);
+        await closeChannelTransport(channel);
       } catch (error) {
         if (!isNotOpenError(error)) {
           updateChannel(id, { state: "error", error: messageOf(error) });
@@ -745,27 +962,16 @@ export default function App() {
         }
       }
       const remaining = channels.filter((item) => item.id !== id);
-      removeChannel(id);
-      setFramesByChannel((previous) => {
-        const next = { ...previous };
-        delete next[id];
-        return next;
-      });
-      setDroppedByChannel((previous) => {
-        const next = { ...previous };
-        delete next[id];
-        return next;
-      });
-      setFramingErrorsByChannel((previous) => {
-        const next = { ...previous };
-        delete next[id];
-        return next;
-      });
-      if (activeId === id && remaining.length > 0) {
-        selectChannel((remaining[0] as Channel).id);
+      removeChannelArtifacts([id, ...ownedAcceptedIds]);
+      const remainingAfterOwned = remaining.filter((item) => !ownedAcceptedIds.includes(item.id));
+      if (
+        (activeId === id || (activeId !== null && ownedAcceptedIds.includes(activeId))) &&
+        remainingAfterOwned.length > 0
+      ) {
+        selectChannel((remainingAfterOwned[0] as Channel).id);
       }
     },
-    [activeId, channels, removeChannel, selectChannel, updateChannel],
+    [activeId, channels, removeChannelArtifacts, selectChannel, updateChannel],
   );
 
   const handleSavePreset = useCallback(async (name: string, value: ChannelFormValue) => {
@@ -899,7 +1105,7 @@ export default function App() {
                   {dockTab === "send" ? (
                     <Composer
                       channelName={active?.name ?? null}
-                      canSend={active !== null && active.kind === "serial"}
+                      canSend={active !== null && active.kind !== "tcp-server"}
                       sending={sending}
                       error={sendError}
                       onSend={(payload) => void handleSend(payload)}

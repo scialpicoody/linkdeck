@@ -51,6 +51,17 @@ func (s *SerialService) List() ([]PortInfo, error) {
 	return List()
 }
 
+// OpenNames returns the names of ports currently open through this service.
+func (s *SerialService) OpenNames() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	names := make([]string, 0, len(s.ports))
+	for name := range s.ports {
+		names = append(names, name)
+	}
+	return names
+}
+
 // Open validates req and opens the port, reporting an error if it is already
 // open through this service.
 func (s *SerialService) Open(req OpenRequest) (PortInfo, error) {

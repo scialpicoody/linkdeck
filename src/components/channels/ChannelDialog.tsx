@@ -186,6 +186,7 @@ export function ChannelDialog({
   const labelClass = "mb-1 block text-xs font-medium text-muted-foreground";
   const inputClass =
     "min-h-9 w-full rounded-[var(--radius)] border border-input bg-card px-2.5 font-mono text-sm text-foreground placeholder:text-muted-foreground focus:outline-2 focus:outline-ring";
+  const initialEndpoint = initial?.transport === "serial" ? initial.port : (initial?.address ?? "");
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -196,12 +197,12 @@ export function ChannelDialog({
           className="fixed top-1/2 left-1/2 z-50 max-h-[calc(100%-2rem)] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 overflow-auto rounded-[var(--radius)] border border-border bg-card p-4 text-card-foreground shadow-lg"
         >
           <Dialog.Title className="text-sm font-medium">
-            {initial === null ? "Open channel" : `Channel settings — ${initial.port}`}
+            {initial === null ? "Open channel" : `Channel settings — ${initialEndpoint}`}
           </Dialog.Title>
           <p className="mt-1 text-xs text-muted-foreground">
             {initial === null
-              ? "Pick a port and parameters. Editing a live channel closes and reopens it."
-              : "Applying closes and reopens the port; on failure the previous settings are kept."}
+              ? "Choose serial or TCP, then configure the endpoint and framing."
+              : "Applying replaces the live transport; on failure LinkDeck attempts to restore the previous configuration."}
           </p>
 
           <div className="mt-4 flex flex-col gap-3">
@@ -263,61 +264,207 @@ export function ChannelDialog({
               </p>
             </div>
 
-            {ports.length > 0 ? (
-              <FieldSelect
-                id="channel-port"
-                label="Port"
-                value={draft.port}
-                onValueChange={(v) => set("port", v)}
-                options={optionsOf(ports)}
-                placeholder="Choose a port…"
-              />
-            ) : (
-              <div>
-                <label htmlFor="channel-port" className={labelClass}>
-                  Port
-                </label>
-                <input
-                  id="channel-port"
-                  value={draft.port}
-                  onChange={(e) => set("port", e.target.value)}
-                  placeholder="/dev/tty.usbserial-…"
-                  autoComplete="off"
-                  className={inputClass}
-                />
-              </div>
-            )}
+            <FieldSelect
+              id="channel-transport"
+              label="Transport"
+              value={draft.transport}
+              onValueChange={(v) => set("transport", v as ChannelFormValue["transport"])}
+              options={[
+                { value: "serial", label: "Serial" },
+                { value: "tcp-client", label: "TCP client" },
+                { value: "tcp-server", label: "TCP server" },
+              ]}
+            />
 
-            <div className="grid grid-cols-2 gap-3">
-              <FieldSelect
-                id="channel-baud"
-                label="Baud rate"
-                value={String(draft.baudRate)}
-                onValueChange={(v) => set("baudRate", Number(v))}
-                options={BAUD_RATES.map((b) => ({ value: String(b), label: b.toLocaleString() }))}
-              />
-              <FieldSelect
-                id="channel-data"
-                label="Data bits"
-                value={String(draft.dataBits)}
-                onValueChange={(v) => set("dataBits", Number(v) as ChannelFormValue["dataBits"])}
-                options={optionsOf(DATA_BITS)}
-              />
-              <FieldSelect
-                id="channel-parity"
-                label="Parity"
-                value={draft.parity}
-                onValueChange={(v) => set("parity", v as ChannelFormValue["parity"])}
-                options={optionsOf(PARITIES)}
-              />
-              <FieldSelect
-                id="channel-stop"
-                label="Stop bits"
-                value={draft.stopBits}
-                onValueChange={(v) => set("stopBits", v as ChannelFormValue["stopBits"])}
-                options={optionsOf(STOP_BITS)}
-              />
-            </div>
+            {draft.transport === "serial" ? (
+              <>
+                {ports.length > 0 ? (
+                  <FieldSelect
+                    id="channel-port"
+                    label="Port"
+                    value={draft.port}
+                    onValueChange={(v) => set("port", v)}
+                    options={optionsOf(ports)}
+                    placeholder="Choose a port…"
+                  />
+                ) : (
+                  <div>
+                    <label htmlFor="channel-port" className={labelClass}>
+                      Port
+                    </label>
+                    <input
+                      id="channel-port"
+                      value={draft.port}
+                      onChange={(e) => set("port", e.target.value)}
+                      placeholder="/dev/tty.usbserial-…"
+                      autoComplete="off"
+                      className={inputClass}
+                    />
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-3">
+                  <FieldSelect
+                    id="channel-baud"
+                    label="Baud rate"
+                    value={String(draft.baudRate)}
+                    onValueChange={(v) => set("baudRate", Number(v))}
+                    options={BAUD_RATES.map((b) => ({
+                      value: String(b),
+                      label: b.toLocaleString(),
+                    }))}
+                  />
+                  <FieldSelect
+                    id="channel-data"
+                    label="Data bits"
+                    value={String(draft.dataBits)}
+                    onValueChange={(v) =>
+                      set("dataBits", Number(v) as ChannelFormValue["dataBits"])
+                    }
+                    options={optionsOf(DATA_BITS)}
+                  />
+                  <FieldSelect
+                    id="channel-parity"
+                    label="Parity"
+                    value={draft.parity}
+                    onValueChange={(v) => set("parity", v as ChannelFormValue["parity"])}
+                    options={optionsOf(PARITIES)}
+                  />
+                  <FieldSelect
+                    id="channel-stop"
+                    label="Stop bits"
+                    value={draft.stopBits}
+                    onValueChange={(v) => set("stopBits", v as ChannelFormValue["stopBits"])}
+                    options={optionsOf(STOP_BITS)}
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <label htmlFor="channel-address" className={labelClass}>
+                    {draft.transport === "tcp-server" ? "Listen address" : "Remote address"}
+                  </label>
+                  <input
+                    id="channel-address"
+                    value={draft.address}
+                    onChange={(e) => set("address", e.target.value)}
+                    placeholder={
+                      draft.transport === "tcp-server" ? "127.0.0.1:9000" : "192.168.1.20:502"
+                    }
+                    autoComplete="off"
+                    className={inputClass}
+                  />
+                  {draft.transport === "tcp-server" && (
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      Servers bind only to the address you enter. Use a loopback address for local
+                      bench access; port 0 chooses an available port.
+                    </p>
+                  )}
+                </div>
+
+                {draft.transport === "tcp-client" && (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label htmlFor="channel-connect-timeout" className={labelClass}>
+                          Connect timeout (ms)
+                        </label>
+                        <input
+                          id="channel-connect-timeout"
+                          type="number"
+                          min={1}
+                          value={draft.connectTimeoutMs}
+                          onChange={(e) => set("connectTimeoutMs", Number(e.target.value))}
+                          className={inputClass}
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="channel-heartbeat" className={labelClass}>
+                          Heartbeat (ms, 0 off)
+                        </label>
+                        <input
+                          id="channel-heartbeat"
+                          type="number"
+                          min={0}
+                          value={draft.heartbeatMs}
+                          onChange={(e) => set("heartbeatMs", Number(e.target.value))}
+                          className={inputClass}
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label htmlFor="channel-heartbeat-payload" className={labelClass}>
+                        Heartbeat payload (ASCII)
+                      </label>
+                      <input
+                        id="channel-heartbeat-payload"
+                        value={draft.heartbeatPayload}
+                        onChange={(e) => set("heartbeatPayload", e.target.value)}
+                        placeholder="ping"
+                        autoComplete="off"
+                        className={inputClass}
+                      />
+                    </div>
+                    <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <input
+                        type="checkbox"
+                        checked={draft.reconnectEnabled}
+                        onChange={(e) => set("reconnectEnabled", e.target.checked)}
+                      />
+                      Reconnect automatically after a drop
+                    </label>
+                    {draft.reconnectEnabled && (
+                      <div className="grid grid-cols-3 gap-3">
+                        <div>
+                          <label htmlFor="channel-reconnect-initial" className={labelClass}>
+                            Initial ms
+                          </label>
+                          <input
+                            id="channel-reconnect-initial"
+                            type="number"
+                            min={0}
+                            value={draft.reconnectInitialMs}
+                            onChange={(e) => set("reconnectInitialMs", Number(e.target.value))}
+                            className={inputClass}
+                          />
+                        </div>
+                        <div>
+                          <label htmlFor="channel-reconnect-max" className={labelClass}>
+                            Max ms
+                          </label>
+                          <input
+                            id="channel-reconnect-max"
+                            type="number"
+                            min={0}
+                            value={draft.reconnectMaxMs}
+                            onChange={(e) => set("reconnectMaxMs", Number(e.target.value))}
+                            className={inputClass}
+                          />
+                        </div>
+                        <div>
+                          <label htmlFor="channel-reconnect-attempts" className={labelClass}>
+                            Attempts
+                          </label>
+                          <input
+                            id="channel-reconnect-attempts"
+                            type="number"
+                            min={0}
+                            value={draft.reconnectMaxAttempts}
+                            onChange={(e) => set("reconnectMaxAttempts", Number(e.target.value))}
+                            className={inputClass}
+                          />
+                        </div>
+                      </div>
+                    )}
+                    <p className="text-[10px] leading-relaxed text-muted-foreground">
+                      Attempts = 0 keeps retrying. When disabled, a drop becomes a terminal closed
+                      state and offers recovery with the saved configuration.
+                    </p>
+                  </>
+                )}
+              </>
+            )}
 
             <FieldSelect
               id="channel-framing"

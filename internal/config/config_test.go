@@ -40,9 +40,12 @@ func TestLoadRoundTrip(t *testing.T) {
 			"bench": {
 				Transport: TransportSerial, Endpoint: "/dev/ttyUSB0",
 				Baud: 9600, DataBits: 8, Parity: "even", StopBits: "1",
-				Framing:       FramingConfig{Name: "delimiter", Opts: map[string]string{"delimiter": "\n"}},
-				ReadTimeoutMs: 500,
-				Reconnect:     ReconnectConfig{Enabled: true, InitialMs: 200, MaxMs: 2000, MaxAttempts: 5},
+				Framing:          FramingConfig{Name: "delimiter", Opts: map[string]string{"delimiter": "\n"}},
+				ReadTimeoutMs:    500,
+				Reconnect:        ReconnectConfig{Enabled: true, InitialMs: 200, MaxMs: 2000, MaxAttempts: 5},
+				ConnectTimeoutMs: 3000,
+				HeartbeatMs:      250,
+				HeartbeatPayload: "ping",
 			},
 			"pi": {Transport: TransportTCP, Endpoint: "10.0.0.2:9000", Framing: FramingConfig{Name: "length-prefix"}},
 		},
@@ -59,7 +62,8 @@ func TestLoadRoundTrip(t *testing.T) {
 		t.Fatalf("round trip mismatch: %+v", got)
 	}
 	b := got.Presets["bench"]
-	if b.Baud != 9600 || b.Parity != "even" || b.Framing.Opts["delimiter"] != "\n" || !b.Reconnect.Enabled {
+	if b.Baud != 9600 || b.Parity != "even" || b.Framing.Opts["delimiter"] != "\n" ||
+		!b.Reconnect.Enabled || b.ConnectTimeoutMs != 3000 || b.HeartbeatPayload != "ping" {
 		t.Fatalf("preset mismatch: %+v", b)
 	}
 }

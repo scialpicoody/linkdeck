@@ -8,7 +8,9 @@ import type { FramingKind } from "../inspector/types";
  * Keeping the fields flat makes the form stable while switching framing kinds.
  */
 export interface ChannelFormValue {
+  transport: "serial" | "tcp-client" | "tcp-server";
   port: string;
+  address: string;
   baudRate: number;
   dataBits: 5 | 6 | 7 | 8;
   parity: Parity;
@@ -23,10 +25,19 @@ export interface ChannelFormValue {
   checksum: "xor" | "sum8" | "crc8";
   maxFrameSize: number;
   readTimeoutMs: number;
+  connectTimeoutMs: number;
+  reconnectEnabled: boolean;
+  reconnectInitialMs: number;
+  reconnectMaxMs: number;
+  reconnectMaxAttempts: number;
+  heartbeatMs: number;
+  heartbeatPayload: string;
 }
 
 export const DEFAULT_CHANNEL_FORM: ChannelFormValue = {
+  transport: "serial",
   port: "",
+  address: "127.0.0.1:9000",
   baudRate: 115200,
   dataBits: 8,
   parity: "none",
@@ -41,6 +52,13 @@ export const DEFAULT_CHANNEL_FORM: ChannelFormValue = {
   checksum: "xor",
   maxFrameSize: 0,
   readTimeoutMs: 0,
+  connectTimeoutMs: 5000,
+  reconnectEnabled: true,
+  reconnectInitialMs: 100,
+  reconnectMaxMs: 5000,
+  reconnectMaxAttempts: 0,
+  heartbeatMs: 0,
+  heartbeatPayload: "",
 };
 
 const HEX_RE = /^[0-9a-fA-F]+$/;
@@ -82,7 +100,25 @@ export function toFramingSpec(value: ChannelFormValue): Spec {
 
 /** Validate fields locally before crossing the bindings boundary. */
 export function validateChannelForm(value: ChannelFormValue): string | null {
-  if (value.port.trim().length === 0) return "Port is required.";
+  if (value.transport === "serial" && value.port.trim().length === 0) return "Port is required.";
+  if (value.transport !== "serial" && value.address.trim().length === 0) {
+    return "TCP address is required.";
+  }
+  if (value.transport !== "serial" && !/^.+:\d+$/.test(value.address.trim())) {
+    return "TCP address must be host:port.";
+  }
+  if (value.transport === "tcp-client" && value.connectTimeoutMs <= 0) {
+    return "Connect timeout must be greater than zero.";
+  }
+  if (value.transport === "tcp-client" && value.reconnectInitialMs < 0) {
+    return "Reconnect initial delay cannot be negative.";
+  }
+  if (value.transport === "tcp-client" && value.reconnectMaxMs < value.reconnectInitialMs) {
+    return "Reconnect max delay must be at least the initial delay.";
+  }
+  if (value.transport === "tcp-client" && value.heartbeatMs < 0) {
+    return "Heartbeat interval cannot be negative.";
+  }
   if (value.maxFrameSize < 0) return "Max frame size cannot be negative.";
   if (value.framing === "delimiter" && !validHex(value.delimiterHex)) {
     return "Delimiter must be a complete, non-empty hex byte sequence.";

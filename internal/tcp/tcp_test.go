@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"linkdeck/internal/framing"
+	"linkdeck/internal/script"
+	"linkdeck/internal/stream"
 )
 
 // waitFor polls cond until true or the timeout elapses.
@@ -206,6 +208,19 @@ func TestMaxRetriesExhaustsToClosed(t *testing.T) {
 	waitState(t, c, StateClosed, 5*time.Second)
 }
 
+func TestNoReconnectFailsInitialDial(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+
+	opts := fastOpts()
+	opts.MaxRetries = -1
+	client, err := Dial("one-shot", addr, opts)
+	require.Error(t, err)
+	require.Nil(t, client)
+}
+
 func TestMultiConnIsolation(t *testing.T) {
 	addr, stop := startEcho(t, false)
 	defer stop()
@@ -335,4 +350,46 @@ func TestServiceListAndHeartbeat(t *testing.T) {
 	st, err := svc.Status("hb")
 	require.NoError(t, err)
 	require.Equal(t, StateConnected, st)
+}
+
+func TestServerStreamsAcceptedConnections(t *testing.T) {
+	svc := NewTcpService()
+	batches := make(chan stream.Batch, 8)
+	mgr := stream.NewManager(script.NewPool(), func(batch stream.Batch) {
+		batches <- batch
+	})
+	defer mgr.Close()
+	svc.AttachStream(mgr)
+
+	li, err := svc.Listen(ListenRequest{
+		Name: "srv", Address: "127.0.0.1:0", Stream: true,
+		Framing: framing.Spec{Kind: "delimiter", DelimiterHex: "0A"},
+	})
+	require.NoError(t, err)
+	defer svc.Unlisten("srv")
+
+	raw, err := net.Dial("tcp", li.Address)
+	require.NoError(t, err)
+	_, err = raw.Write([]byte("live\n"))
+	require.NoError(t, err)
+
+	var batch stream.Batch
+	select {
+	case batch = <-batches:
+	case <-time.After(3 * time.Second):
+		t.Fatal("accepted connection never produced a live frame")
+	}
+	require.Len(t, batch.Frames, 1)
+	require.Equal(t, "live", string(batch.Frames[0].Payload))
+
+	conns, err := svc.ServerConns("srv")
+	require.NoError(t, err)
+	require.Len(t, conns, 1)
+	require.NotEmpty(t, conns[0].Address)
+
+	require.NoError(t, raw.Close())
+	waitFor(t, "remote close cleanup", 3*time.Second, func() bool {
+		conns, err := svc.ServerConns("srv")
+		return err == nil && len(conns) == 0
+	})
 }

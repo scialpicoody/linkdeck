@@ -111,6 +111,16 @@ func (s *Server) Conns() []string {
 	return ids
 }
 
+// RemoteAddr returns the peer address for one accepted connection.
+func (s *Server) RemoteAddr(id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sc, ok := s.conns[id]; ok && sc.conn.RemoteAddr() != nil {
+		return sc.conn.RemoteAddr().String()
+	}
+	return ""
+}
+
 // Accept returns the next accepted-connection id in accept order. A zero
 // timeout polls once (error if none queued); a positive timeout waits up to
 // the duration; a negative timeout waits until Close. It returns an error
@@ -200,6 +210,7 @@ func (s *Server) Recv(id string, maxLen int) ([]byte, error) {
 	buf := make([]byte, maxLen)
 	n, rerr := sc.conn.Read(buf)
 	if rerr != nil {
+		_ = s.CloseConn(id)
 		return nil, fmt.Errorf("tcp: recv on %s: %w", id, rerr)
 	}
 	return buf[:n], nil
