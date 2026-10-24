@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { type PortInfo, SerialService } from "../mygo";
+import { isHostAvailable } from "./host";
 
 /** Lifecycle state of a channel. Drives state dots in sidebar/tabs/status. */
 export type ChannelState = "connected" | "connecting" | "disconnected" | "error";
@@ -94,6 +95,12 @@ export function useChannels(pollMs = 3000): UseChannels {
   const [listError, setListError] = useState<string | null>(null);
 
   useEffect(() => {
+    // Browser-only mode has no SerialService; skip polling and report no
+    // channels instead of surfacing a transport error as a failure.
+    if (!isHostAvailable()) {
+      setPortsLoading(false);
+      return;
+    }
     let cancelled = false;
     async function poll() {
       try {

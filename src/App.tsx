@@ -9,6 +9,7 @@ import type { Frame } from "./components/terminal";
 import { ConfirmDialog } from "./components/ui/ConfirmDialog";
 import { HintsProvider } from "./components/ui/Hint";
 import { useChannels } from "./lib/channels";
+import { isHostAvailable } from "./lib/host";
 import { events, SerialService } from "./mygo";
 
 // Real wave-2 panels. Props contracts:
@@ -57,13 +58,17 @@ export default function App() {
   const [errorLine, setErrorLine] = useState<number | null>(null);
   const [pendingCloseId, setPendingCloseId] = useState<string | null>(null);
 
-  useEffect(
-    () =>
-      events.tick.on((time) => {
-        setClock(new Date(time).toLocaleTimeString());
-      }),
-    [],
-  );
+  useEffect(() => {
+    // Without the Go host there is no tick event; fall back to a local clock
+    // so the status bar still advances in browser-only mode.
+    if (!isHostAvailable()) {
+      const timer = setInterval(() => setClock(new Date().toLocaleTimeString()), 1000);
+      return () => clearInterval(timer);
+    }
+    return events.tick.on((time) => {
+      setClock(new Date(time).toLocaleTimeString());
+    });
+  }, []);
 
   // Clear the unread badge whenever the active channel changes.
   useEffect(() => {
