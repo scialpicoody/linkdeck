@@ -161,6 +161,8 @@ Editable source is `resources/icon.svg`; packaged output is
 - Row settings open the same dialog in edit mode.
 - A row close action disconnects the transport and removes the channel.
   Closing a server also removes its accepted-connection channels.
+- Disconnected, closed, and errored owned channels offer reconnect from their
+  last successful configuration without replacing Channel or capture identity.
 - The rail can collapse to icons without losing the active indication.
 - Empty and loading states stay inside the rail and provide an open action.
 
@@ -202,7 +204,8 @@ Editable source is `resources/icon.svg`; packaged output is
 ### StatusBar
 
 - Shows channel kind/state, endpoint, baud when known, RX/TX counters,
-  cumulative queue drops, framing failures, and the latest channel error.
+  cumulative queue drops, framing failures, the latest channel error, and the
+  current TCP reconnect attempt.
 - Counters can be reset from the status bar.
 - The wall clock is intentionally absent.
 

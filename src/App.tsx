@@ -51,6 +51,7 @@ import { EMPTY_CAPTURE_SESSION } from "./lib/capture-session";
 import {
   type Channel,
   type ChannelConfig,
+  canReconnect,
   channelStateFromStatus,
   createChannelId,
   type NewChannel,
@@ -951,6 +952,48 @@ export default function App() {
     [activeId, channels, removeChannelArtifacts, selectChannel, updateChannel],
   );
 
+  const handleReconnectChannel = useCallback(
+    async (id: string) => {
+      const channel = channels.find((item) => item.id === id);
+      if (channel === undefined || !canReconnect(channel)) return;
+      const ownedAcceptedIds =
+        channel.kind === "tcp-server"
+          ? channels
+              .filter(
+                (candidate) =>
+                  candidate.kind === "tcp-accepted" &&
+                  candidate.config.transport === "tcp-accepted" &&
+                  candidate.config.parentKey === channel.backendKey,
+              )
+              .map((candidate) => candidate.id)
+          : [];
+
+      updateChannel(id, { state: "connecting", error: undefined, attempts: 0 });
+      try {
+        await closeChannelTransport(channel).catch((error: unknown) => {
+          if (!isNotOpenError(error)) throw error;
+        });
+        if (ownedAcceptedIds.length > 0) removeChannelArtifacts(ownedAcceptedIds);
+        const opened = await reopenSavedChannel(id, channel);
+        updateChannel(id, {
+          ...opened,
+          attempts: 0,
+          error: undefined,
+        });
+        selectChannel(id);
+        if (opened.state === "reconnecting") {
+          toast.info(`Reconnecting ${opened.name}`);
+        } else {
+          toast.success(`Reopened ${opened.name}`);
+        }
+      } catch (error) {
+        updateChannel(id, { state: "error", error: messageOf(error), attempts: 0 });
+        toast.error(`Reconnect ${channel.name} failed`, { description: messageOf(error) });
+      }
+    },
+    [channels, removeChannelArtifacts, selectChannel, updateChannel],
+  );
+
   const handleSavePreset = useCallback(async (name: string, value: ChannelFormValue) => {
     const cleanName = name.trim();
     await ConfigAPI.savePreset(cleanName, presetFromForm(value));
@@ -1062,6 +1105,7 @@ export default function App() {
               onSelect={selectChannel}
               onAdd={() => setChannelDialog({ mode: "create" })}
               onEdit={(id) => setChannelDialog({ mode: "edit", id })}
+              onReconnect={(id) => void handleReconnectChannel(id)}
               onClose={(id) => void handleCloseChannel(id)}
             />
           )}

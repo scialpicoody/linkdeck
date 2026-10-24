@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   type Channel,
   type ChannelState,
+  canReconnect,
   channelStateFromStatus,
   reconcileChannels,
   stateColor,
@@ -56,6 +57,15 @@ describe("transport reconciliation", () => {
     expect(channelStateFromStatus("tcp-conn", "connected")).toBe("connected");
   });
 
+  it("offers manual reconnect only for inactive owned channels", () => {
+    expect(canReconnect({ kind: "serial", state: "disconnected" })).toBe(true);
+    expect(canReconnect({ kind: "tcp-client", state: "closed" })).toBe(true);
+    expect(canReconnect({ kind: "tcp-server", state: "error" })).toBe(true);
+    expect(canReconnect({ kind: "tcp-client", state: "reconnecting" })).toBe(false);
+    expect(canReconnect({ kind: "tcp-accepted", state: "disconnected" })).toBe(false);
+    expect(canReconnect({ kind: "serial", state: "connected" })).toBe(false);
+  });
+
   it("adds accepted connections under their server without activating them", () => {
     const next = reconcileChannels(
       [server],
@@ -93,6 +103,49 @@ describe("transport reconciliation", () => {
     const next = reconcileChannels([server], [], true);
     expect(next[0]?.state).toBe("disconnected");
     expect(next[0]?.backendKey).toBe("server");
+  });
+
+  it("surfaces consecutive TCP reconnect attempts from host status", () => {
+    const client: Channel = {
+      ...server,
+      id: "client-1",
+      name: "bench",
+      kind: "tcp-client",
+      state: "connected",
+      endpoint: "127.0.0.1:7000",
+      backendKey: "client-1",
+      config: {
+        transport: "tcp-client",
+        address: "127.0.0.1:7000",
+        connectTimeoutMs: 5000,
+        reconnectEnabled: true,
+        reconnectInitialMs: 100,
+        reconnectMaxMs: 5000,
+        reconnectMaxAttempts: 0,
+        heartbeatMs: 0,
+        heartbeatPayload: "",
+        framing: { kind: "delimiter", delimiterHex: "0A" },
+      },
+    };
+    const next = reconcileChannels(
+      [client],
+      [
+        {
+          key: "client-1",
+          kind: "tcp-client",
+          parent: "",
+          endpoint: "127.0.0.1:7000",
+          state: "reconnecting",
+          error: "connection refused",
+          attempts: 3,
+        },
+      ],
+    );
+    expect(next[0]).toMatchObject({
+      state: "reconnecting",
+      attempts: 3,
+      error: "connection refused",
+    });
   });
 
   it("preserves identity and state across removal and recovery", () => {

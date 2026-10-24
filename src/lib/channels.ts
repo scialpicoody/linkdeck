@@ -98,6 +98,8 @@ export interface Channel {
   backendKey: string;
   /** Last successful transport configuration retained for reconnect/edit. */
   config: ChannelConfig;
+  /** Consecutive TCP reconnect attempts reported by the host. */
+  attempts?: number;
   /** Last transport-level error, if state is "error". */
   error?: string;
 }
@@ -116,7 +118,10 @@ export interface UseChannels {
   updateChannel: (
     id: string,
     patch: Partial<
-      Pick<Channel, "name" | "kind" | "endpoint" | "backendKey" | "state" | "config" | "error">
+      Pick<
+        Channel,
+        "name" | "kind" | "endpoint" | "backendKey" | "state" | "config" | "attempts" | "error"
+      >
     >,
   ) => void;
   removeChannel: (id: string) => void;
@@ -151,6 +156,14 @@ export function channelStateFromStatus(kind: string, state: string): ChannelStat
   }
 }
 
+/** Whether a Channel can be reopened manually from its retained configuration. */
+export function canReconnect(channel: Pick<Channel, "kind" | "state">): boolean {
+  if (channel.kind === "tcp-accepted" || channel.state === "reconnecting") return false;
+  return (
+    channel.state === "disconnected" || channel.state === "closed" || channel.state === "error"
+  );
+}
+
 function transportStatusFromTcp(row: ChannelInfo): TransportStatus {
   return {
     key: row.name,
@@ -178,12 +191,13 @@ export function reconcileChannels(
     const status = byKey.get(channel.backendKey);
     if (status === undefined) {
       return complete && channel.state !== "disconnected"
-        ? { ...channel, state: "disconnected" as const }
+        ? { ...channel, state: "disconnected" as const, attempts: 0 }
         : channel;
     }
     return {
       ...channel,
       state: channelStateFromStatus(status.kind, status.state),
+      attempts: status.attempts,
       error: status.error === "" ? undefined : status.error,
     };
   });
@@ -203,6 +217,7 @@ export function reconcileChannels(
       backendKey: status.key,
       kind: "tcp-accepted",
       state: channelStateFromStatus(status.kind, status.state),
+      attempts: status.attempts,
       config: {
         transport: "tcp-accepted",
         parentKey: parent.backendKey,

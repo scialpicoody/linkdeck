@@ -38,6 +38,9 @@ export function StatusBar({ channel, capture, onResetCounters }: StatusBarProps)
             <span className="hidden sm:inline">{channel.config.baudRate} BAUD</span>
           )}
           <span className="hidden uppercase md:inline">{channel.kind}</span>
+          {channel.state === "reconnecting" && (channel.attempts ?? 0) > 0 && (
+            <span className="text-warning">RETRY {channel.attempts}</span>
+          )}
           <Hint label="Reset RX/TX counters">
             <button
               type="button"

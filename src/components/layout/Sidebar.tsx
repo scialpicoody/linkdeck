@@ -5,13 +5,14 @@ import {
   Network,
   Plus,
   Power,
+  RefreshCw,
   Server,
   Settings2,
   Unplug,
 } from "lucide-react";
 import { useState } from "react";
 import type { CaptureSessions } from "../../lib/capture-session";
-import { type Channel, stateColor } from "../../lib/channels";
+import { type Channel, canReconnect, stateColor } from "../../lib/channels";
 import { cn } from "../../lib/utils";
 
 interface SidebarProps {
@@ -23,6 +24,7 @@ interface SidebarProps {
   onSelect: (id: string) => void;
   onAdd: () => void;
   onEdit: (id: string) => void;
+  onReconnect: (id: string) => void;
   onClose: (id: string) => void;
 }
 
@@ -42,6 +44,7 @@ export function Sidebar({
   onSelect,
   onAdd,
   onEdit,
+  onReconnect,
   onClose,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
@@ -174,7 +177,12 @@ export function Sidebar({
                           />
                         </span>
                         <span className="mt-0.5 flex items-center justify-between gap-2 font-mono text-[8px] text-muted-foreground uppercase">
-                          <span className="truncate">{channel.state}</span>
+                          <span className="truncate">
+                            {channel.state}
+                            {channel.state === "reconnecting" && (channel.attempts ?? 0) > 0
+                              ? ` · retry ${channel.attempts}`
+                              : ""}
+                          </span>
                           <span className="flex items-center gap-1">
                             {(capture?.unread ?? 0) > 0 && (
                               <span className="text-primary">
@@ -189,6 +197,17 @@ export function Sidebar({
                   </button>
                   {!collapsed && (
                     <div className="absolute top-1/2 right-1 flex -translate-y-1/2 bg-card/95 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">
+                      {canReconnect(channel) && (
+                        <button
+                          type="button"
+                          onClick={() => onReconnect(channel.id)}
+                          title={`Reconnect ${channel.name}`}
+                          aria-label={`Reconnect ${channel.name}`}
+                          className="grid size-6 place-items-center text-muted-foreground hover:text-primary"
+                        >
+                          <RefreshCw size={12} aria-hidden="true" />
+                        </button>
+                      )}
                       {channel.kind !== "tcp-accepted" && (
                         <button
                           type="button"
