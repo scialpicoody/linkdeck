@@ -37,4 +37,10 @@ describe("appendFrames", () => {
     const buffer = { frames: [], bytes: 0 };
     expect(appendFrames(buffer, [])).toBe(buffer);
   });
+
+  it("merges late timestamped rows into one ordered contract", () => {
+    const out = appendFrames({ frames: [frame([1], 20)], bytes: 1 }, [frame([2], 10)]);
+    expect(out.frames.map((item) => item.ts)).toEqual([10, 20]);
+    expect(out.bytes).toBe(2);
+  });
 });

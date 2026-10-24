@@ -31,7 +31,7 @@ export function appendFrames(
 ): FrameBuffer {
   if (incoming.length === 0) return buffer;
 
-  const frames = [...buffer.frames, ...incoming];
+  const frames = mergeOrdered(buffer.frames, incoming);
   let bytes = buffer.bytes;
   for (const frame of incoming) bytes += frame.payload.length;
 
@@ -46,4 +46,24 @@ export function appendFrames(
 
   if (start === 0) return { frames, bytes };
   return { frames: frames.slice(start), bytes };
+}
+
+function mergeOrdered(existing: Frame[], incoming: Frame[]): Frame[] {
+  if (existing.length === 0) return [...incoming];
+  if (incoming.length === 0) return [...existing];
+  const out: Frame[] = [];
+  let left = 0;
+  let right = 0;
+  while (left < existing.length && right < incoming.length) {
+    if ((existing[left] as Frame).ts <= (incoming[right] as Frame).ts) {
+      out.push(existing[left] as Frame);
+      left++;
+    } else {
+      out.push(incoming[right] as Frame);
+      right++;
+    }
+  }
+  while (left < existing.length) out.push(existing[left++] as Frame);
+  while (right < incoming.length) out.push(incoming[right++] as Frame);
+  return out;
 }

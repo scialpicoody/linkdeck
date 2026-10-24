@@ -10,12 +10,12 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { visibleFrameEntries } from "../../lib/frame-view";
 import { cn } from "../../lib/utils";
 import { Hint } from "../ui/Hint";
-import { asciiPreview, formatTs, frameByteLength, frameMatches, hexPreview } from "./format";
+import { asciiPreview, formatTs, frameByteLength, hexPreview } from "./format";
 import type { DirectionFilter, FrameCodec, FramePanelProps } from "./types";
 
-const TAIL_CAP = 500;
 const ROW_GRID =
   "grid-cols-[88px_44px_44px_minmax(0,1fr)] sm:grid-cols-[100px_48px_52px_minmax(0,1fr)]";
 
@@ -29,7 +29,7 @@ export default function FramePanel({
   onSelectFrame,
   onClear,
 }: FramePanelProps) {
-  const [paused, setPaused] = useState(false);
+  const [pausedAt, setPausedAt] = useState<number | null>(null);
   const [follow, setFollow] = useState(true);
   const [codec, setCodec] = useState<FrameCodec>("ascii");
   const [dirFilter, setDirFilter] = useState<DirectionFilter>("all");
@@ -37,16 +37,18 @@ export default function FramePanel({
   const [selected, setSelected] = useState<number | null>(null);
   const endRef = useRef<HTMLLIElement>(null);
 
-  const visible = useMemo(() => {
-    const tail = follow ? frames.slice(-TAIL_CAP) : frames;
-    const base = follow ? frames.length - tail.length : 0;
-    return tail
-      .map((frame, index) => ({ frame, index: base + index }))
-      .filter(
-        ({ frame }) =>
-          (dirFilter === "all" || frame.dir === dirFilter) && frameMatches(frame, query),
-      );
-  }, [frames, follow, dirFilter, query]);
+  // Channel switches start with a live, unselected view.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: channelName is the intentional reset trigger.
+  useEffect(() => {
+    setPausedAt(null);
+    setSelected(null);
+  }, [channelName]);
+
+  const visible = useMemo(
+    () => visibleFrameEntries(frames, { pausedAt, follow, dirFilter, query }),
+    [frames, pausedAt, follow, dirFilter, query],
+  );
+  const paused = pausedAt !== null;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new visible tail is the scroll trigger.
   useEffect(() => {
@@ -74,7 +76,7 @@ export default function FramePanel({
               {channelName ?? "No channel"}
             </h2>
             <p className="mt-0.5 font-mono text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
-              {frames.length} frames · live capture
+              {frames.length} frames · {paused ? "paused capture" : "live capture"}
             </p>
           </div>
         </div>
@@ -138,7 +140,7 @@ export default function FramePanel({
             <button
               type="button"
               aria-pressed={paused}
-              onClick={() => setPaused((value) => !value)}
+              onClick={() => setPausedAt((value) => (value === null ? frames.length : null))}
               aria-label={paused ? "Resume rendering" : "Pause rendering"}
               className={cn(
                 "grid size-7 place-items-center border border-transparent text-muted-foreground hover:border-border hover:bg-card hover:text-foreground",
@@ -223,15 +225,6 @@ export default function FramePanel({
               {channelName === null && (
                 <p className="eyebrow mt-5 text-muted-foreground/65">Awaiting signal path</p>
               )}
-            </div>
-          </li>
-        ) : paused ? (
-          <li className="grid min-h-32 place-items-center px-4 text-center">
-            <div>
-              <Pause size={18} className="mx-auto text-warning" aria-hidden="true" />
-              <p className="mt-3 text-[11px] text-muted-foreground">
-                Rendering paused · {frames.length} frames retained
-              </p>
             </div>
           </li>
         ) : (

@@ -3,6 +3,7 @@ import {
   type Channel,
   type ChannelState,
   channelStateFromStatus,
+  channelWithTraffic,
   reconcileChannels,
   stateColor,
 } from "./channels";
@@ -138,5 +139,16 @@ describe("transport reconciliation", () => {
       },
     ]);
     expect(recovered[0]).toMatchObject({ state: "connected", rxBytes: 42, txBytes: 7 });
+  });
+
+  it("counts unread frames even when a complete frame has zero payload bytes", () => {
+    const inbound = channelWithTraffic(
+      { ...server, kind: "serial", config: { ...server.config, transport: "serial" } } as Channel,
+      "in",
+      0,
+      null,
+    );
+    expect(inbound.unread).toBe(1);
+    expect(channelWithTraffic(inbound, "out", 3, null).unread).toBe(1);
   });
 });

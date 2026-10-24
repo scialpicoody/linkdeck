@@ -227,6 +227,24 @@ export function reconcileChannels(
   return next;
 }
 
+/** Apply one decoded frame's counters and unread semantics. */
+export function channelWithTraffic(
+  channel: Channel,
+  dir: "in" | "out",
+  bytes: number,
+  activeId: string | null,
+): Channel {
+  if (bytes < 0) return channel;
+  return {
+    ...channel,
+    state: channel.state === "error" ? channel.state : "connected",
+    error: dir === "in" ? undefined : channel.error,
+    rxBytes: channel.rxBytes + (dir === "in" ? bytes : 0),
+    txBytes: channel.txBytes + (dir === "out" ? bytes : 0),
+    unread: dir === "in" && channel.id !== activeId ? channel.unread + 1 : channel.unread,
+  };
+}
+
 /**
  * useChannels polls discovered serial ports and separately owns open
  * channels. Polling can mark a channel disconnected, but never replaces the
@@ -326,19 +344,11 @@ export function useChannels(pollMs = 3000): UseChannels {
 
   const addTraffic = useCallback(
     (id: string, dir: "in" | "out", bytes: number) => {
-      if (bytes <= 0) return;
+      if (bytes < 0) return;
       setChannels((prev) =>
-        prev.map((channel) => {
-          if (channel.id !== id) return channel;
-          return {
-            ...channel,
-            state: channel.state === "error" ? channel.state : "connected",
-            error: dir === "in" ? undefined : channel.error,
-            rxBytes: channel.rxBytes + (dir === "in" ? bytes : 0),
-            txBytes: channel.txBytes + (dir === "out" ? bytes : 0),
-            unread: dir === "in" && id !== activeId ? channel.unread + 1 : channel.unread,
-          };
-        }),
+        prev.map((channel) =>
+          channel.id === id ? channelWithTraffic(channel, dir, bytes, activeId) : channel,
+        ),
       );
     },
     [activeId],
