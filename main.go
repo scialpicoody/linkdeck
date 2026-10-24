@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -97,6 +98,29 @@ func (ConfigAPI) Presets() map[string]config.Preset {
 	return cfg.Presets
 }
 
+// StreamAPI exposes RX backpressure telemetry to the workbench.
+type StreamAPI struct {
+	mu  sync.RWMutex
+	mgr *stream.Manager
+}
+
+func (a *StreamAPI) attach(mgr *stream.Manager) {
+	a.mu.Lock()
+	a.mgr = mgr
+	a.mu.Unlock()
+}
+
+// Dropped reports the cumulative batches evicted for channel.
+func (a *StreamAPI) Dropped(channel string) uint64 {
+	a.mu.RLock()
+	mgr := a.mgr
+	a.mu.RUnlock()
+	if mgr == nil {
+		return 0
+	}
+	return mgr.Dropped(channel)
+}
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -111,8 +135,9 @@ func main() {
 		TCP:    link.NewTCPTransport(tcpSvc),
 	})
 	scriptAPI := ScriptAPI{svc: script.NewScriptService(engine)}
+	streamAPI := &StreamAPI{}
 
-	mygo.Bind(Greeter{}, serialSvc, tcpSvc, scriptAPI, ConfigAPI{})
+	mygo.Bind(Greeter{}, serialSvc, tcpSvc, scriptAPI, ConfigAPI{}, streamAPI)
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
@@ -137,6 +162,7 @@ func main() {
 			// running until their channels close.
 			_ = Frames.Emit(win, dtos)
 		})
+		streamAPI.attach(mgr)
 		serialSvc.AttachStream(mgr)
 		tcpSvc.AttachStream(mgr)
 		go func() {

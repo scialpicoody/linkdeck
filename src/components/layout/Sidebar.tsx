@@ -157,7 +157,14 @@ export function Sidebar({
                         </span>
                         <span className="mt-0.5 flex items-center justify-between gap-2 font-mono text-[8px] text-muted-foreground uppercase">
                           <span className="truncate">{channel.state}</span>
-                          <span>{channel.rxBytes + channel.txBytes} B</span>
+                          <span className="flex items-center gap-1">
+                            {channel.unread > 0 && (
+                              <span className="text-primary">
+                                {channel.unread > 99 ? "99+" : channel.unread}
+                              </span>
+                            )}
+                            <span>{channel.rxBytes + channel.txBytes} B</span>
+                          </span>
                         </span>
                       </span>
                     )}

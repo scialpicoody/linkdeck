@@ -4,6 +4,7 @@ import { Toaster, toast } from "sonner";
 import type { ChannelFormValue } from "./components/channels";
 import { ChannelDialog } from "./components/channels";
 import {
+  base64ToBytes,
   Composer,
   type Frame,
   FrameInspector,
@@ -18,9 +19,10 @@ import type { ScriptEntry, ScriptOutputRow } from "./components/scripts";
 import { ScriptEditor, ScriptLibrary, ScriptOutput } from "./components/scripts";
 import { HintsProvider } from "./components/ui/Hint";
 import { useChannels } from "./lib/channels";
+import { appendFrames, EMPTY_FRAME_BUFFER, type FrameBuffer } from "./lib/frame-store";
 import { isHostAvailable } from "./lib/host";
 import { cn } from "./lib/utils";
-import { ConfigAPI, type Preset, SerialService } from "./mygo";
+import { ConfigAPI, events, type FrameDTO, type Preset, SerialService, StreamAPI } from "./mygo";
 
 const DEMO_SCRIPTS: ScriptEntry[] = [
   { id: "at-probe", name: "at-probe.lua", path: "scripts/at-probe.lua", origin: "workspace" },
@@ -41,11 +43,11 @@ export default function App() {
     selectChannel,
     markRead,
     resetCounters,
+    addTraffic,
     setChannelState,
   } = useChannels();
-  // Per-channel TX echo frames. RX frames arrive with the framing phase,
-  // which feeds this same map through a mygo event.
-  const [framesByChannel, setFramesByChannel] = useState<Record<string, Frame[]>>({});
+  const [framesByChannel, setFramesByChannel] = useState<Record<string, FrameBuffer>>({});
+  const [droppedByChannel, setDroppedByChannel] = useState<Record<string, number>>({});
   // Selected frame row → slide-over inspector (#20). Cleared on channel switch.
   const [frameSelection, setFrameSelection] = useState<{ frame: Frame; index: number } | null>(
     null,
@@ -102,6 +104,56 @@ export default function App() {
     }
   }, [listError]);
 
+  // Live RX path: Go emits unmatched complete frames as base64 FrameDTOs.
+  useEffect(() => {
+    if (!isHostAvailable()) return;
+    return events.frames.on((batch: FrameDTO[]) => {
+      const byChannel = new Map<string, Frame[]>();
+      let malformed = 0;
+      for (const dto of batch) {
+        if (dto.dir !== "rx" && dto.dir !== "tx") continue;
+        try {
+          const frame: Frame = {
+            dir: dto.dir === "rx" ? "in" : "out",
+            payload: base64ToBytes(dto.payload),
+            ts: dto.tsMillis,
+          };
+          const frames = byChannel.get(dto.channel) ?? [];
+          frames.push(frame);
+          byChannel.set(dto.channel, frames);
+        } catch {
+          malformed++;
+        }
+      }
+
+      if (malformed > 0) {
+        toast.error("Dropped malformed frame event", {
+          description: `${malformed} payload${malformed === 1 ? "" : "s"} were not valid base64.`,
+        });
+      }
+      if (byChannel.size === 0) return;
+
+      setFramesByChannel((previous) => {
+        const next = { ...previous };
+        for (const [channel, frames] of byChannel) {
+          next[channel] = appendFrames(previous[channel] ?? EMPTY_FRAME_BUFFER, frames);
+        }
+        return next;
+      });
+
+      for (const [channel, frames] of byChannel) {
+        for (const frame of frames) addTraffic(channel, frame.dir, frame.payload.length);
+        void StreamAPI.dropped(channel)
+          .then((dropped) => {
+            setDroppedByChannel((previous) =>
+              previous[channel] === dropped ? previous : { ...previous, [channel]: dropped },
+            );
+          })
+          .catch(() => {});
+      }
+    });
+  }, [addTraffic]);
+
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
 
@@ -110,7 +162,7 @@ export default function App() {
       if (active === null || active.kind !== "serial") return;
       const id = active.id;
       const portName = active.name;
-      const { wire, error } = toWireString(payload);
+      const { wire, bytes, error } = toWireString(payload);
       if (error !== null) {
         setSendError(error);
         return;
@@ -125,10 +177,14 @@ export default function App() {
         // inline composer error + toast. No dependency on Output visibility.
         setFramesByChannel((prev) => ({
           ...prev,
-          [id]: [
-            ...(prev[id] ?? []),
-            { dir: "out", data: `⚠ send failed: ${message}`, ts: Date.now() },
-          ],
+          [id]: appendFrames(prev[id] ?? EMPTY_FRAME_BUFFER, [
+            {
+              dir: "out",
+              payload: new Uint8Array(),
+              ts: Date.now(),
+              error: `Send failed: ${message}`,
+            },
+          ]),
         }));
         setSendError(message);
         toast.error(`Send to ${portName} failed`, { description: message });
@@ -136,12 +192,15 @@ export default function App() {
       } finally {
         setSending(false);
       }
+      addTraffic(id, "out", bytes.length);
       setFramesByChannel((prev) => ({
         ...prev,
-        [id]: [...(prev[id] ?? []), { dir: "out", data: wire, ts: Date.now() }],
+        [id]: appendFrames(prev[id] ?? EMPTY_FRAME_BUFFER, [
+          { dir: "out", payload: bytes, ts: Date.now() },
+        ]),
       }));
     },
-    [active],
+    [active, addTraffic],
   );
 
   const handleRun = useCallback((script: ScriptEntry) => {
@@ -179,7 +238,7 @@ export default function App() {
   const handleClear = useCallback(() => {
     if (active === null) return;
     const id = active.id;
-    setFramesByChannel((prev) => ({ ...prev, [id]: [] }));
+    setFramesByChannel((prev) => ({ ...prev, [id]: EMPTY_FRAME_BUFFER }));
     setFrameSelection(null);
   }, [active]);
 
@@ -263,7 +322,9 @@ export default function App() {
               <div className="flex min-h-0 min-w-0 flex-1 flex-col xl:flex-row">
                 <FramePanel
                   channelName={active?.name ?? null}
-                  frames={active !== null ? (framesByChannel[active.id] ?? []) : []}
+                  frames={
+                    active !== null ? (framesByChannel[active.id] ?? EMPTY_FRAME_BUFFER).frames : []
+                  }
                   onSelectFrame={(frame, index) => {
                     setFrameSelection({ frame, index });
                     setDockTab("inspect");
@@ -440,7 +501,11 @@ export default function App() {
           </main>
         </div>
 
-        <StatusBar channel={active} onResetCounters={resetCounters} />
+        <StatusBar
+          channel={active}
+          onResetCounters={resetCounters}
+          dropped={active !== null ? (droppedByChannel[active.id] ?? 0) : 0}
+        />
         <Toaster position="bottom-right" theme="system" />
         <ChannelDialog
           initial={dialogInitial}

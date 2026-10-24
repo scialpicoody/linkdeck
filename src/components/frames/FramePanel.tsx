@@ -261,10 +261,20 @@ export default function FramePanel({
                     {inbound ? "RX" : "TX"}
                   </span>
                   <span className="text-right text-muted-foreground/85">
-                    {frameByteLength(frame.data)}
+                    {frameByteLength(frame.payload)}
                   </span>
-                  <span className={cn("min-w-0 truncate", inbound ? "text-foreground" : "text-tx")}>
-                    {codec === "ascii" ? asciiPreview(frame.data) : hexPreview(frame.data)}
+                  <span
+                    className={cn(
+                      "min-w-0 truncate",
+                      frame.error !== undefined
+                        ? "text-danger"
+                        : inbound
+                          ? "text-foreground"
+                          : "text-tx",
+                    )}
+                  >
+                    {frame.error ??
+                      (codec === "ascii" ? asciiPreview(frame.payload) : hexPreview(frame.payload))}
                   </span>
                 </button>
               </li>

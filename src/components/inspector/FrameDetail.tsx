@@ -99,7 +99,7 @@ export default function FrameDetail({ frame }: FrameDetailProps) {
     return (
       <div className="grid flex-1 place-items-center p-6 text-center">
         <p className="text-sm text-muted-foreground">
-          No frame selected. Click a row in the terminal to inspect it here.
+          No frame selected. Click a row in the frame monitor to inspect it here.
         </p>
       </div>
     );

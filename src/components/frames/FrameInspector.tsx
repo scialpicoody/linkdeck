@@ -10,15 +10,13 @@ export interface FrameInspectorProps {
   onClose: () => void;
 }
 
-const encoder = new TextEncoder();
-
 function toInspectorFrame(frame: Frame, channelName: string): InspectorFrame {
   return {
     id: `${frame.ts}-${frame.dir}`,
     channelName,
     direction: frame.dir === "in" ? "rx" : "tx",
     timestampMs: frame.ts,
-    payload: encoder.encode(frame.data),
+    payload: frame.payload,
   };
 }
 

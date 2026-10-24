@@ -5,4 +5,4 @@ export type {
   Frame,
   SendPayload,
 } from "./types";
-export { toWireString } from "./types";
+export { base64ToBytes, toWireString } from "./types";

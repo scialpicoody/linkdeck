@@ -333,6 +333,14 @@ export const ConfigAPI = {
   },
 } as const;
 
+/** StreamAPI exposes RX backpressure telemetry to the workbench. */
+export const StreamAPI = {
+  /** Dropped reports the cumulative batches evicted for channel. */
+  dropped(channel: string): Promise<number> {
+    return call("StreamAPI.Dropped", channel);
+  },
+} as const;
+
 // ---- Events ----
 
 /** Events sent by the Go side. Subscribe with `events.name.on(listener)`. */

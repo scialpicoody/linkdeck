@@ -1,13 +1,10 @@
-// Shared channel/tab contract for the workbench shell (wave 1).
-// Sibling slices (terminal, inspector, scripts) consume these types and the
-// useChannels hook. Keep this module minimal and stable: only additive
-// changes, never renames, without coordinating with all panel owners.
+// Shared channel contract for the workbench shell.
 
 import { useCallback, useEffect, useState } from "react";
 import { type PortInfo, SerialService } from "../mygo";
 import { isHostAvailable } from "./host";
 
-/** Lifecycle state of a channel. Drives state dots in sidebar/tabs/status. */
+/** Lifecycle state of a channel. Drives state dots in sidebar/status. */
 export type ChannelState = "connected" | "connecting" | "disconnected" | "error";
 
 /** Transport kind. Only serial exists today; TCP variants are reserved. */
@@ -29,7 +26,7 @@ export interface Channel {
   endpoint: string;
   /** Baud rate when known; undefined until configured/opened. */
   baudRate?: number;
-  /** Unread frames/bytes badge for the tab strip. */
+  /** Unread inbound-frame count shown in the channel rail. */
   unread: number;
   /** Cumulative counters; reset via resetCounters. */
   rxBytes: number;
@@ -40,28 +37,21 @@ export interface Channel {
   port?: PortInfo;
 }
 
-/** An open workbench tab. One tab per open channel (no pinning). */
-interface ChannelTab {
-  channelId: string;
-}
-
 export interface UseChannels {
   /** All known channels (from SerialService.list polling). */
   channels: Channel[];
-  /** Open tabs in open order. */
-  tabs: ChannelTab[];
-  /** Active tab's channel id, or null when no tab is open. */
+  /** Active channel id, or null when none is selected. */
   activeId: string | null;
   /** Active channel object, or null. */
   active: Channel | null;
   portsLoading: boolean;
   listError: string | null;
   openChannel: (id: string) => void;
-  closeChannel: (id: string) => void;
   selectChannel: (id: string) => void;
   markRead: (id: string) => void;
   resetCounters: (id: string) => void;
-  /** Wave-2 hook point: real open/config lands here. Not wired yet. */
+  /** Record decoded frame bytes and update state/unread counters. */
+  addTraffic: (id: string, dir: "in" | "out", bytes: number) => void;
   setChannelState: (id: string, state: ChannelState, error?: string) => void;
 }
 
@@ -82,14 +72,11 @@ function toChannel(port: PortInfo, prev?: Channel): Channel {
 }
 
 /**
- * useChannels polls SerialService.list() for the sidebar channel tree and
- * owns tab open/close/select plus per-channel RX/TX counters. Mock traffic
- * is intentionally absent: counters stay 0 until the transport slice feeds
- * them (wave 2 adds addRx/addTx here).
+ * useChannels polls SerialService.list() for the channel rail and owns
+ * selection plus per-channel RX/TX, unread, and lifecycle state.
  */
 export function useChannels(pollMs = 3000): UseChannels {
   const [channels, setChannels] = useState<Channel[]>([]);
-  const [tabs, setTabs] = useState<ChannelTab[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [portsLoading, setPortsLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
@@ -126,29 +113,14 @@ export function useChannels(pollMs = 3000): UseChannels {
     };
   }, [pollMs]);
 
-  // Drop tabs whose channel vanished (unplugged) — keep selection valid.
   useEffect(() => {
-    setTabs((prev) => {
-      const ids = new Set(channels.map((c) => c.id));
-      const kept = prev.filter((t) => ids.has(t.channelId));
-      return kept.length === prev.length ? prev : kept;
-    });
-  }, [channels]);
-
-  useEffect(() => {
-    if (activeId !== null && !tabs.some((t) => t.channelId === activeId)) {
-      const last = tabs[tabs.length - 1];
-      setActiveId(last === undefined ? null : last.channelId);
+    if (activeId !== null && !channels.some((channel) => channel.id === activeId)) {
+      setActiveId(null);
     }
-  }, [tabs, activeId]);
+  }, [channels, activeId]);
 
   const openChannel = useCallback((id: string) => {
-    setTabs((prev) => (prev.some((t) => t.channelId === id) ? prev : [...prev, { channelId: id }]));
     setActiveId(id);
-  }, []);
-
-  const closeChannel = useCallback((id: string) => {
-    setTabs((prev) => prev.filter((t) => t.channelId !== id));
   }, []);
 
   const selectChannel = useCallback((id: string) => {
@@ -163,6 +135,26 @@ export function useChannels(pollMs = 3000): UseChannels {
     setChannels((prev) => prev.map((c) => (c.id === id ? { ...c, rxBytes: 0, txBytes: 0 } : c)));
   }, []);
 
+  const addTraffic = useCallback(
+    (id: string, dir: "in" | "out", bytes: number) => {
+      if (bytes <= 0) return;
+      setChannels((prev) =>
+        prev.map((channel) => {
+          if (channel.id !== id) return channel;
+          return {
+            ...channel,
+            state: channel.state === "error" ? channel.state : "connected",
+            error: dir === "in" ? undefined : channel.error,
+            rxBytes: channel.rxBytes + (dir === "in" ? bytes : 0),
+            txBytes: channel.txBytes + (dir === "out" ? bytes : 0),
+            unread: dir === "in" && id !== activeId ? channel.unread + 1 : channel.unread,
+          };
+        }),
+      );
+    },
+    [activeId],
+  );
+
   const setChannelState = useCallback((id: string, state: ChannelState, error?: string) => {
     setChannels((prev) => prev.map((c) => (c.id === id ? { ...c, state, error } : c)));
   }, []);
@@ -171,23 +163,22 @@ export function useChannels(pollMs = 3000): UseChannels {
 
   return {
     channels,
-    tabs,
     activeId,
     active,
     portsLoading,
     listError,
     openChannel,
-    closeChannel,
     selectChannel,
     markRead,
     resetCounters,
+    addTraffic,
     setChannelState,
   };
 }
 
 /**
  * stateColor maps a ChannelState to its state-dot fill. Shared by the
- * sidebar, tab strip, and status bar so dots stay consistent.
+ * sidebar and status bar so dots stay consistent.
  */
 export function stateColor(state: ChannelState): string {
   switch (state) {

@@ -11,26 +11,26 @@ import {
 
 describe("toHex", () => {
   it("renders ASCII as lowercase hex pairs", () => {
-    expect(toHex("AB")).toBe("41 42");
+    expect(toHex(new Uint8Array([0x41, 0x42]))).toBe("41 42");
   });
 
   it("renders empty payload as empty string", () => {
-    expect(toHex("")).toBe("");
+    expect(toHex(new Uint8Array())).toBe("");
   });
 
   it("encodes multibyte characters as UTF-8 bytes", () => {
-    expect(toHex("é")).toBe("c3 a9");
+    expect(toHex(new TextEncoder().encode("é"))).toBe("c3 a9");
   });
 });
 
 describe("frameBytes", () => {
   it("counts ASCII bytes one-to-one", () => {
-    expect(frameBytes("hello")).toBe(5);
+    expect(frameBytes(new TextEncoder().encode("hello"))).toBe(5);
   });
 
   it("counts multibyte characters as UTF-8 length", () => {
-    expect(frameBytes("é")).toBe(2);
-    expect(frameBytes("")).toBe(0);
+    expect(frameBytes(new TextEncoder().encode("é"))).toBe(2);
+    expect(frameBytes(new Uint8Array())).toBe(0);
   });
 });
 
@@ -52,33 +52,37 @@ describe("formatTs", () => {
 
 describe("asciiPreview", () => {
   it("collapses newlines to dots on one line", () => {
-    expect(asciiPreview("AT\r\nOK\r\n")).toBe("AT··OK··");
+    expect(asciiPreview(new TextEncoder().encode("AT\r\nOK\r\n"))).toBe("AT..OK..");
   });
 
   it("truncates long payloads with an ellipsis", () => {
-    expect(asciiPreview("a".repeat(100), 10)).toBe(`${"a".repeat(10)}…`);
+    expect(asciiPreview(new TextEncoder().encode("a".repeat(100)), 10)).toBe(
+      `${"a".repeat(10)}...`,
+    );
   });
 });
 
 describe("hexPreview", () => {
   it("renders hex pairs and truncates by bytes", () => {
-    expect(hexPreview("AB")).toBe("41 42");
-    expect(hexPreview("a".repeat(40), 4)).toBe("61 61 61 61 …");
+    expect(hexPreview(new TextEncoder().encode("AB"))).toBe("41 42");
+    expect(hexPreview(new TextEncoder().encode("a".repeat(40)), 4)).toBe("61 61 61 61 ...");
   });
 });
 
 describe("frameMatches", () => {
   it("matches ASCII case-insensitively", () => {
-    expect(frameMatches({ data: "AT+CSQ" }, "csq")).toBe(true);
-    expect(frameMatches({ data: "AT+CSQ" }, "zzz")).toBe(false);
+    const payload = new TextEncoder().encode("AT+CSQ");
+    expect(frameMatches({ payload }, "csq")).toBe(true);
+    expect(frameMatches({ payload }, "zzz")).toBe(false);
   });
 
   it("matches hex bytes with or without spaces", () => {
-    expect(frameMatches({ data: "AB" }, "41 42")).toBe(true);
-    expect(frameMatches({ data: "AB" }, "4142")).toBe(true);
+    const payload = new TextEncoder().encode("AB");
+    expect(frameMatches({ payload }, "41 42")).toBe(true);
+    expect(frameMatches({ payload }, "4142")).toBe(true);
   });
 
   it("empty keyword matches everything", () => {
-    expect(frameMatches({ data: "x" }, "  ")).toBe(true);
+    expect(frameMatches({ payload: new Uint8Array([0x78]) }, "  ")).toBe(true);
   });
 });

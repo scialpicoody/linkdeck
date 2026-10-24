@@ -1,25 +1,17 @@
-/**
- * Formatting helpers for the frame table (#17). Pure functions; no I/O.
- *
- * Byte/data conversions live here (single source); the old terminal slice
- * is gone with TerminalPanel.
- */
+/** Formatting helpers for the frame table. Pure functions; no I/O. */
 
-const encoder = new TextEncoder();
-
-/** Byte length of a frame payload (UTF-8), for flood accounting. */
-export function frameBytes(data: string): number {
-  return encoder.encode(data).length;
+/** Byte length of a frame payload, for flood accounting. */
+export function frameBytes(payload: Uint8Array): number {
+  return payload.length;
 }
 
-/** Render a payload as space-separated lowercase hex pairs (`3c 7b …`). */
-export function toHex(data: string): string {
-  const bytes = encoder.encode(data);
+/** Render a payload as space-separated lowercase hex pairs (`3c 7b ...`). */
+export function toHex(payload: Uint8Array): string {
   let out = "";
-  for (let i = 0; i < bytes.length; i++) {
-    const b = bytes[i] as number;
+  for (let i = 0; i < payload.length; i++) {
+    const byte = payload[i] as number;
     if (i > 0) out += " ";
-    out += b.toString(16).padStart(2, "0");
+    out += byte.toString(16).padStart(2, "0");
   }
   return out;
 }
@@ -31,60 +23,57 @@ export function formatTs(ts: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
 
-/** Human `N KB` / `N MB` rendering for dropped-byte counters. */
+/** Human `N KB` / `N MB` rendering for counters. */
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-/** Number of payload bytes in a frame (UTF-8). */
-export function frameByteLength(data: string): number {
-  return encoder.encode(data).length;
+/** Number of payload bytes in a frame. */
+export function frameByteLength(payload: Uint8Array): number {
+  return payload.length;
 }
 
 /**
- * Short single-line ASCII preview: control chars and newlines become `·`
- * so rows stay one line tall. Truncated with an ellipsis past `max` chars.
+ * Short single-line ASCII preview: non-printable bytes become a dot so rows
+ * stay one line tall. Truncated with an ellipsis past `max` bytes.
  */
-export function asciiPreview(data: string, max = 96): string {
-  const flat = data.replace(/[\r\n\t]/g, "·");
-  const clean = [...flat].map((ch) => {
-    const code = ch.codePointAt(0) ?? 0;
-    return code < 0x20 || code === 0x7f ? "·" : ch;
-  });
-  const joined = clean.join("");
-  return joined.length > max ? `${joined.slice(0, max)}…` : joined;
+export function asciiPreview(payload: Uint8Array, max = 96): string {
+  let out = "";
+  for (const byte of payload) {
+    if (out.length >= max) return `${out}...`;
+    out += byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : ".";
+  }
+  return out;
 }
 
 /**
  * Render a payload as space-separated lowercase hex pairs, truncated to
  * `maxBytes` with an ellipsis. Single-line so rows stay compact.
  */
-export function hexPreview(data: string, maxBytes = 32): string {
-  const bytes = encoder.encode(data);
-  const shown = bytes.slice(0, maxBytes);
+export function hexPreview(payload: Uint8Array, maxBytes = 32): string {
+  const shown = payload.subarray(0, maxBytes);
   let out = "";
   for (let i = 0; i < shown.length; i++) {
-    const b = shown[i] as number;
+    const byte = shown[i] as number;
     if (i > 0) out += " ";
-    out += b.toString(16).padStart(2, "0");
+    out += byte.toString(16).padStart(2, "0");
   }
-  return bytes.length > maxBytes ? `${out} …` : out;
+  return payload.length > maxBytes ? `${out} ...` : out;
 }
 
 /**
- * Case-insensitive keyword match against the ASCII text and its hex form,
- * so a search for "ab" also hits payload bytes 0xAB.
+ * Case-insensitive keyword match against printable ASCII and hex forms, so a
+ * search for "ab" also hits payload bytes 0xAB.
  */
-export function frameMatches(frame: { data: string }, keyword: string): boolean {
-  const q = keyword.trim().toLowerCase();
-  if (q.length === 0) return true;
-  if (frame.data.toLowerCase().includes(q)) return true;
-  const compact = q.replace(/\s+/g, "");
+export function frameMatches(frame: { payload: Uint8Array }, keyword: string): boolean {
+  const query = keyword.trim().toLowerCase();
+  if (query.length === 0) return true;
+  if (asciiPreview(frame.payload, frame.payload.length).toLowerCase().includes(query)) {
+    return true;
+  }
+  const compact = query.replace(/\s+/g, "");
   if (compact.length === 0) return true;
-  const hex = encoder
-    .encode(frame.data)
-    .reduce((acc, b) => acc + (b as number).toString(16).padStart(2, "0"), "");
-  return hex.includes(compact);
+  return toHex(frame.payload).replaceAll(" ", "").includes(compact);
 }
