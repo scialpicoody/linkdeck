@@ -1,4 +1,4 @@
-import { Cable, ChevronLeft, ChevronRight, Plus, Settings2 } from "lucide-react";
+import { Cable, ChevronLeft, ChevronRight, Plus, Power, Settings2 } from "lucide-react";
 import { useState } from "react";
 import { type Channel, stateColor } from "../../lib/channels";
 import { cn } from "../../lib/utils";
@@ -8,10 +8,10 @@ interface SidebarProps {
   activeId: string | null;
   loading: boolean;
   listError: string | null;
-  onOpen: (id: string) => void;
   onSelect: (id: string) => void;
   onAdd: () => void;
   onEdit: (id: string) => void;
+  onClose: (id: string) => void;
 }
 
 export function Sidebar({
@@ -19,10 +19,10 @@ export function Sidebar({
   activeId,
   loading,
   listError,
-  onOpen,
   onSelect,
   onAdd,
   onEdit,
+  onClose,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
   const connected = channels.filter((channel) => channel.state === "connected").length;
@@ -90,7 +90,7 @@ export function Sidebar({
               <div className="border border-dashed border-border bg-background/45 px-3 py-4">
                 <Cable size={18} className="text-muted-foreground" aria-hidden="true" />
                 <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                  No serial ports detected. Connect a device, then refresh.
+                  No channels open. Open a serial port to start capturing frames.
                 </p>
                 {listError !== null && (
                   <p className="mt-2 text-[11px] leading-snug text-danger">{listError}</p>
@@ -118,10 +118,7 @@ export function Sidebar({
                 <li key={channel.id} className="group relative">
                   <button
                     type="button"
-                    onClick={() => {
-                      onOpen(channel.id);
-                      onSelect(channel.id);
-                    }}
+                    onClick={() => onSelect(channel.id)}
                     title={collapsed ? `${channel.name} · ${channel.state}` : channel.endpoint}
                     className={cn(
                       "flex min-h-11 w-full items-center text-left transition-colors",
@@ -170,15 +167,26 @@ export function Sidebar({
                     )}
                   </button>
                   {!collapsed && (
-                    <button
-                      type="button"
-                      onClick={() => onEdit(channel.id)}
-                      title={`Settings for ${channel.name}`}
-                      aria-label={`Settings for ${channel.name}`}
-                      className="absolute top-1/2 right-1 grid size-6 -translate-y-1/2 place-items-center bg-card/95 text-muted-foreground opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 hover:text-foreground"
-                    >
-                      <Settings2 size={12} aria-hidden="true" />
-                    </button>
+                    <div className="absolute top-1/2 right-1 flex -translate-y-1/2 bg-card/95 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">
+                      <button
+                        type="button"
+                        onClick={() => onEdit(channel.id)}
+                        title={`Settings for ${channel.name}`}
+                        aria-label={`Settings for ${channel.name}`}
+                        className="grid size-6 place-items-center text-muted-foreground hover:text-foreground"
+                      >
+                        <Settings2 size={12} aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void onClose(channel.id)}
+                        title={`Close ${channel.name}`}
+                        aria-label={`Close ${channel.name}`}
+                        className="grid size-6 place-items-center text-muted-foreground hover:text-danger"
+                      >
+                        <Power size={12} aria-hidden="true" />
+                      </button>
+                    </div>
                   )}
                 </li>
               );

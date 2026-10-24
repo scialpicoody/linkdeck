@@ -1,89 +1,104 @@
 // Shared channel contract for the workbench shell.
 
 import { useCallback, useEffect, useState } from "react";
-import { type PortInfo, SerialService } from "../mygo";
+import { type Parity, type PortInfo, SerialService, type Spec, type StopBits } from "../mygo";
 import { isHostAvailable } from "./host";
 
 /** Lifecycle state of a channel. Drives state dots in sidebar/status. */
 export type ChannelState = "connected" | "connecting" | "disconnected" | "error";
 
-/** Transport kind. Only serial exists today; TCP variants are reserved. */
-type ChannelKind = "serial";
+/** Transport kind. TCP variants join this union in the TCP integration slice. */
+export type ChannelKind = "serial";
+
+/** Serial parameters retained after open so edit/reopen can be transactional. */
+export interface SerialChannelConfig {
+  baudRate: number;
+  dataBits: 5 | 6 | 7 | 8;
+  parity: Parity;
+  stopBits: StopBits;
+  readTimeoutMs: number;
+  framing: Spec;
+}
+
+/** Input used when a transport has opened successfully. */
+interface NewChannel {
+  id: string;
+  name: string;
+  endpoint: string;
+  kind: ChannelKind;
+  state: ChannelState;
+  config: SerialChannelConfig;
+}
 
 /**
- * Channel is a named communication endpoint. Today every channel mirrors a
- * serial port reported by SerialService.list(); later slices add open/config
- * behavior without changing this shape.
+ * Channel is one open communication endpoint. It is deliberately separate
+ * from a discovered serial port: unplugging a port marks the channel
+ * disconnected but never destroys its frame history.
  */
 export interface Channel {
-  /** Stable id; for serial channels this is the port name. */
+  /** Stable frontend id; endpoint edits do not change it. */
   id: string;
-  /** Display name (port name, e.g. "/dev/tty.usbserial-110"). */
+  /** Display name. */
   name: string;
   kind: ChannelKind;
   state: ChannelState;
-  /** Endpoint label for the status bar (port name for serial). */
+  /** Backend channel key and human-readable endpoint. */
   endpoint: string;
-  /** Baud rate when known; undefined until configured/opened. */
-  baudRate?: number;
+  /** Serial parameters used for the current (or last successful) open. */
+  config: SerialChannelConfig;
   /** Unread inbound-frame count shown in the channel rail. */
   unread: number;
   /** Cumulative counters; reset via resetCounters. */
   rxBytes: number;
   txBytes: number;
-  /** Last error message, if state is "error". */
+  /** Last transport-level error, if state is "error". */
   error?: string;
-  /** Raw port detail when sourced from SerialService.list(). */
-  port?: PortInfo;
 }
 
 export interface UseChannels {
-  /** All known channels (from SerialService.list polling). */
+  /** Discovered serial devices, not open channels. */
+  ports: PortInfo[];
+  /** Open channels owned by this workbench session. */
   channels: Channel[];
-  /** Active channel id, or null when none is selected. */
   activeId: string | null;
-  /** Active channel object, or null. */
   active: Channel | null;
   portsLoading: boolean;
   listError: string | null;
-  openChannel: (id: string) => void;
   selectChannel: (id: string) => void;
   markRead: (id: string) => void;
   resetCounters: (id: string) => void;
+  addChannel: (channel: NewChannel) => void;
+  updateChannel: (
+    id: string,
+    patch: Partial<Pick<Channel, "name" | "endpoint" | "state" | "config" | "error">>,
+  ) => void;
+  removeChannel: (id: string) => void;
   /** Record decoded frame bytes and update state/unread counters. */
   addTraffic: (id: string, dir: "in" | "out", bytes: number) => void;
   setChannelState: (id: string, state: ChannelState, error?: string) => void;
 }
 
-function toChannel(port: PortInfo, prev?: Channel): Channel {
-  return {
-    id: port.name,
-    name: port.name,
-    kind: "serial",
-    state: prev?.state ?? "disconnected",
-    endpoint: port.name,
-    baudRate: prev?.baudRate,
-    unread: prev?.unread ?? 0,
-    rxBytes: prev?.rxBytes ?? 0,
-    txBytes: prev?.txBytes ?? 0,
-    error: prev?.error,
-    port,
-  };
+let channelSequence = 0;
+
+/** Allocate an in-session stable id without relying on endpoint uniqueness. */
+export function createChannelId(kind: ChannelKind): string {
+  channelSequence += 1;
+  return `${kind}-${channelSequence}`;
 }
 
 /**
- * useChannels polls SerialService.list() for the channel rail and owns
- * selection plus per-channel RX/TX, unread, and lifecycle state.
+ * useChannels polls discovered serial ports and separately owns open
+ * channels. Polling can mark a channel disconnected, but never replaces the
+ * channel list, so manual endpoints and history survive discovery changes.
  */
 export function useChannels(pollMs = 3000): UseChannels {
+  const [ports, setPorts] = useState<PortInfo[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [portsLoading, setPortsLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Browser-only mode has no SerialService; skip polling and report no
-    // channels instead of surfacing a transport error as a failure.
     if (!isHostAvailable()) {
       setPortsLoading(false);
       return;
@@ -91,12 +106,9 @@ export function useChannels(pollMs = 3000): UseChannels {
     let cancelled = false;
     async function poll() {
       try {
-        const ports = await SerialService.list();
+        const discovered = await SerialService.list();
         if (cancelled) return;
-        setChannels((prev) => {
-          const prevById = new Map(prev.map((c) => [c.id, c]));
-          return ports.map((p) => toChannel(p, prevById.get(p.name)));
-        });
+        setPorts(discovered);
         setListError(null);
       } catch (err) {
         if (cancelled) return;
@@ -119,10 +131,6 @@ export function useChannels(pollMs = 3000): UseChannels {
     }
   }, [channels, activeId]);
 
-  const openChannel = useCallback((id: string) => {
-    setActiveId(id);
-  }, []);
-
   const selectChannel = useCallback((id: string) => {
     setActiveId(id);
   }, []);
@@ -133,6 +141,25 @@ export function useChannels(pollMs = 3000): UseChannels {
 
   const resetCounters = useCallback((id: string) => {
     setChannels((prev) => prev.map((c) => (c.id === id ? { ...c, rxBytes: 0, txBytes: 0 } : c)));
+  }, []);
+
+  const addChannel = useCallback((channel: NewChannel) => {
+    setChannels((prev) => [
+      ...prev.filter((existing) => existing.id !== channel.id),
+      { ...channel, unread: 0, rxBytes: 0, txBytes: 0 },
+    ]);
+    setActiveId(channel.id);
+  }, []);
+
+  const updateChannel = useCallback<UseChannels["updateChannel"]>((id, patch) => {
+    setChannels((prev) =>
+      prev.map((channel) => (channel.id === id ? { ...channel, ...patch } : channel)),
+    );
+  }, []);
+
+  const removeChannel = useCallback((id: string) => {
+    setChannels((prev) => prev.filter((channel) => channel.id !== id));
+    setActiveId((current) => (current === id ? null : current));
   }, []);
 
   const addTraffic = useCallback(
@@ -162,15 +189,18 @@ export function useChannels(pollMs = 3000): UseChannels {
   const active = channels.find((c) => c.id === activeId) ?? null;
 
   return {
+    ports,
     channels,
     activeId,
     active,
     portsLoading,
     listError,
-    openChannel,
     selectChannel,
     markRead,
     resetCounters,
+    addChannel,
+    updateChannel,
+    removeChannel,
     addTraffic,
     setChannelState,
   };

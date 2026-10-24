@@ -44,6 +44,7 @@ export interface FrameDTO {
 export interface FramingConfig {
   Name: string;
   Opts: Record<string, string>;
+  Spec: Spec | null;
 }
 
 export interface FramingError {
@@ -341,8 +342,16 @@ export const ScriptAPI = {
   },
 } as const;
 
-/** ConfigAPI exposes presets and favorites to the UI. */
+/**
+ * ConfigAPI exposes presets and favorites to the UI. All read-modify-write
+ * operations share one mutex so concurrent preset/favorite edits cannot
+ * overwrite each other.
+ */
 export const ConfigAPI = {
+  /** DeletePreset removes one named preset. */
+  deletePreset(name: string): Promise<void> {
+    return call("ConfigAPI.DeletePreset", name);
+  },
   /** Favorites returns persisted script-favorite paths. */
   favorites(): Promise<string[]> {
     return call("ConfigAPI.Favorites");
@@ -350,6 +359,14 @@ export const ConfigAPI = {
   /** Presets returns named channel presets. */
   presets(): Promise<Record<string, Preset>> {
     return call("ConfigAPI.Presets");
+  },
+  /** RenamePreset preserves the preset body under a new name. */
+  renamePreset(oldName: string, newName: string): Promise<void> {
+    return call("ConfigAPI.RenamePreset", oldName, newName);
+  },
+  /** SavePreset validates and atomically inserts or replaces one preset. */
+  savePreset(name: string, preset: Preset): Promise<void> {
+    return call("ConfigAPI.SavePreset", name, preset);
   },
   /** SetFavorites persists script-favorite paths (atomic write). */
   setFavorites(favs: string[]): Promise<void> {

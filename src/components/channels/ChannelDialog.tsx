@@ -16,6 +16,9 @@ export interface ChannelDialogProps {
   onOpenChange: (open: boolean) => void;
   /** Owner sequences close+open and reports failure; dialog closes on resolve. */
   onSubmit: (value: ChannelFormValue) => Promise<void>;
+  onSavePreset?: (name: string, value: ChannelFormValue) => Promise<void>;
+  onRenamePreset?: (oldName: string, newName: string) => Promise<void>;
+  onDeletePreset?: (name: string) => Promise<void>;
 }
 
 const BAUD_RATES = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
@@ -48,9 +51,14 @@ export function ChannelDialog({
   open,
   onOpenChange,
   onSubmit,
+  onSavePreset,
+  onRenamePreset,
+  onDeletePreset,
 }: ChannelDialogProps) {
   const [draft, setDraft] = useState<ChannelFormValue>(initial ?? DEFAULT_CHANNEL_FORM);
   const [presetName, setPresetName] = useState("");
+  const [presetDraftName, setPresetDraftName] = useState("");
+  const [presetBusy, setPresetBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -59,6 +67,8 @@ export function ChannelDialog({
     if (open) {
       setDraft(initial ?? DEFAULT_CHANNEL_FORM);
       setPresetName("");
+      setPresetDraftName("");
+      setPresetBusy(false);
       setError(null);
     }
   }, [open, initial]);
@@ -74,8 +84,76 @@ export function ChannelDialog({
 
   function applyPreset(name: string): void {
     setPresetName(name);
+    setPresetDraftName(name);
     const p = presets[name];
     if (p) setDraft({ ...p });
+  }
+
+  async function handleSavePreset(): Promise<void> {
+    if (!onSavePreset) return;
+    const name = presetDraftName.trim();
+    if (name.length === 0) {
+      setError("Preset name is required.");
+      return;
+    }
+    const validationError = validateChannelForm(draft);
+    if (validationError !== null) {
+      setError(validationError);
+      return;
+    }
+    setPresetBusy(true);
+    setError(null);
+    try {
+      await onSavePreset(name, draft);
+      setPresetName(name);
+      setPresetDraftName(name);
+      toast.success(`Preset "${name}" saved`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      toast.error("Save preset failed", { description: message });
+    } finally {
+      setPresetBusy(false);
+    }
+  }
+
+  async function handleRenamePreset(): Promise<void> {
+    if (!onRenamePreset || presetName.length === 0) return;
+    const name = presetDraftName.trim();
+    if (name.length === 0 || name === presetName) return;
+    setPresetBusy(true);
+    setError(null);
+    try {
+      await onRenamePreset(presetName, name);
+      setPresetName(name);
+      setPresetDraftName(name);
+      toast.success(`Preset renamed to "${name}"`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      toast.error("Rename preset failed", { description: message });
+    } finally {
+      setPresetBusy(false);
+    }
+  }
+
+  async function handleDeletePreset(): Promise<void> {
+    if (!onDeletePreset || presetName.length === 0) return;
+    const name = presetName;
+    setPresetBusy(true);
+    setError(null);
+    try {
+      await onDeletePreset(name);
+      setPresetName("");
+      setPresetDraftName("");
+      toast.success(`Preset "${name}" deleted`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      toast.error("Delete preset failed", { description: message });
+    } finally {
+      setPresetBusy(false);
+    }
   }
 
   async function handleSubmit(): Promise<void> {
@@ -127,16 +205,63 @@ export function ChannelDialog({
           </p>
 
           <div className="mt-4 flex flex-col gap-3">
-            {presetOptions.length > 0 && (
-              <FieldSelect
-                id="channel-preset"
-                label="Preset (fills the form)"
-                value={presetName}
-                onValueChange={applyPreset}
-                options={presetOptions}
-                placeholder="Choose a preset…"
-              />
-            )}
+            <div className="border border-border bg-panel-raised p-2.5">
+              {presetOptions.length > 0 && (
+                <FieldSelect
+                  id="channel-preset"
+                  label="Preset (fills the form)"
+                  value={presetName}
+                  onValueChange={applyPreset}
+                  options={presetOptions}
+                  placeholder="Choose a preset…"
+                />
+              )}
+              <div className="mt-2 flex items-end gap-1.5">
+                <label htmlFor="channel-preset-name" className="min-w-0 flex-1">
+                  <span className={labelClass}>Preset name</span>
+                  <input
+                    id="channel-preset-name"
+                    value={presetDraftName}
+                    onChange={(event) => setPresetDraftName(event.target.value)}
+                    placeholder="Bench 115200"
+                    autoComplete="off"
+                    className={inputClass}
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={presetBusy || presetDraftName.trim().length === 0}
+                  onClick={() => void handleSavePreset()}
+                  className="h-9 border border-border bg-card px-2.5 font-mono text-[9px] uppercase hover:bg-muted disabled:opacity-40"
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    presetBusy ||
+                    presetName.length === 0 ||
+                    presetDraftName.trim().length === 0 ||
+                    presetDraftName.trim() === presetName
+                  }
+                  onClick={() => void handleRenamePreset()}
+                  className="h-9 border border-border bg-card px-2.5 font-mono text-[9px] uppercase hover:bg-muted disabled:opacity-40"
+                >
+                  Rename
+                </button>
+                <button
+                  type="button"
+                  disabled={presetBusy || presetName.length === 0}
+                  onClick={() => void handleDeletePreset()}
+                  className="h-9 border border-border bg-card px-2.5 font-mono text-[9px] uppercase text-danger hover:bg-muted disabled:opacity-40"
+                >
+                  Delete
+                </button>
+              </div>
+              <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
+                Save the current form as a reusable channel preset.
+              </p>
+            </div>
 
             {ports.length > 0 ? (
               <FieldSelect

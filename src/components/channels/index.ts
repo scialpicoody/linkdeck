@@ -3,5 +3,6 @@ export type { ChannelFormValue } from "./types";
 export {
   DEFAULT_CHANNEL_FORM,
   framingFormFromPreset,
+  framingFormFromSpec,
   toFramingSpec,
 } from "./types";

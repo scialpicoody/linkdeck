@@ -154,9 +154,10 @@ Editable source is `resources/icon.svg`; packaged output is
 
 ### Sidebar
 
-- Lists discovered channels and their current state.
+- Lists open channels and their current state.
 - Selecting a row makes it active and opens it in the workbench model.
 - Row settings open the same dialog in edit mode.
+- A row close action disconnects the transport and removes the channel.
 - The rail can collapse to icons without losing the active indication.
 - Empty and loading states stay inside the rail and provide an open action.
 
@@ -202,9 +203,10 @@ Editable source is `resources/icon.svg`; packaged output is
 - Framing exposes delimiter, fixed-size, length-prefix, and
   header-length-checksum parameters, including a shared frame-size cap.
 - Edit closes and attempts to reopen the channel with the submitted settings.
-- Failures stay visible in the dialog. Transactional reopen/rollback is not
-  implemented yet.
-- Presets fill the form. Preset authoring is not part of this dialog yet.
+- Same-endpoint edit failures roll back to the last successful serial config;
+  different-endpoint edits open the new transport before closing the old one.
+- Presets fill the form and can be saved, renamed, or deleted from the same
+  dialog. Typed framing specs take precedence over legacy string options.
 
 ### Scripts
 
@@ -260,11 +262,10 @@ to make an empty workbench look populated.
 These are implementation gaps, not reasons to change the visual direction:
 
 - Scripts still use demo entries and the run action is a stub.
-- Edit-channel failure does not yet restore the prior connection settings.
 - The operations dock is fixed-width rather than resizable.
-- Preset writing and TCP channel creation are not exposed in the current dialog.
-- Channel discovery still models every polled serial device as a channel rather
-  than distinguishing devices from open channels.
+- TCP channel creation is not exposed in the current dialog.
+- Transport-level disconnect/reconnect events are not yet published by the Go
+  service, so a physical unplug is not reflected until the next failed action.
 
 The frame stream now ingests live RX batches, surfaces per-channel dropped and
 framing-error counters in the status bar, and applies the dialog's framing

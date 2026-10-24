@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_CHANNEL_FORM,
   framingFormFromPreset,
+  framingFormFromSpec,
   toFramingSpec,
   validateChannelForm,
 } from "./types";
@@ -57,7 +58,23 @@ describe("channel framing form", () => {
       framingFormFromPreset({
         Name: "delimiter",
         Opts: { delimiter: "\r\n" },
+        Spec: null,
       }),
     ).toMatchObject({ framing: "delimiter", delimiterHex: "0d0a" });
+  });
+
+  it("prefers a typed framing spec over legacy preset opts", () => {
+    expect(
+      framingFormFromPreset({
+        Name: "delimiter",
+        Opts: { delimiter: "\n" },
+        Spec: {
+          kind: "fixed-size",
+          fixedSize: 128,
+          maxFrameSize: 256,
+        },
+      }),
+    ).toMatchObject({ framing: "fixed-size", fixedSize: 128, maxFrameSize: 256 });
+    expect(framingFormFromSpec({ kind: "length-prefix", lengthWidth: 4 }).lengthWidth).toBe(4);
   });
 });

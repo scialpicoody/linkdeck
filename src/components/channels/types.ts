@@ -114,11 +114,31 @@ function encodeLegacyText(value: string): string {
   ).join("");
 }
 
+/** Convert a generated Go framing.Spec into editable dialog values. */
+export function framingFormFromSpec(spec: Spec): Partial<ChannelFormValue> {
+  const kind = spec.kind as FramingKind;
+  if (!["delimiter", "fixed-size", "length-prefix", "header-checksum"].includes(kind)) {
+    return {};
+  }
+  return {
+    framing: kind,
+    delimiterHex: spec.delimiterHex ?? DEFAULT_CHANNEL_FORM.delimiterHex,
+    fixedSize: spec.fixedSize ?? DEFAULT_CHANNEL_FORM.fixedSize,
+    lengthOffset: spec.lengthOffset ?? DEFAULT_CHANNEL_FORM.lengthOffset,
+    lengthWidth: spec.lengthWidth ?? DEFAULT_CHANNEL_FORM.lengthWidth,
+    lengthEndian: spec.lengthEndian === "little" ? "little" : "big",
+    headerHex: spec.headerHex ?? DEFAULT_CHANNEL_FORM.headerHex,
+    checksum: spec.checksum === "sum8" || spec.checksum === "crc8" ? spec.checksum : "xor",
+    maxFrameSize: spec.maxFrameSize ?? 0,
+  };
+}
+
 /**
  * Convert config v1 presets (`name` + string `opts`) into the dialog shape.
  * Unknown/missing values fall back to safe defaults for the selected kind.
  */
 export function framingFormFromPreset(config: FramingConfig): Partial<ChannelFormValue> {
+  if (config.Spec !== undefined && config.Spec !== null) return framingFormFromSpec(config.Spec);
   const kind = config.Name as FramingKind;
   if (!["delimiter", "fixed-size", "length-prefix", "header-checksum"].includes(kind)) {
     return {};

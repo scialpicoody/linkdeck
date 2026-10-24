@@ -67,11 +67,17 @@ func (a ScriptAPI) RunFile(path string, timeoutMs int) error {
 	return a.svc.RunFile(path, timeoutMs)
 }
 
-// ConfigAPI exposes presets and favorites to the UI.
-type ConfigAPI struct{}
+// ConfigAPI exposes presets and favorites to the UI. All read-modify-write
+// operations share one mutex so concurrent preset/favorite edits cannot
+// overwrite each other.
+type ConfigAPI struct {
+	mu sync.Mutex
+}
 
 // Favorites returns persisted script-favorite paths.
-func (ConfigAPI) Favorites() []string {
+func (a *ConfigAPI) Favorites() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	cfg, err := config.Load()
 	if err != nil {
 		log.Printf("config: %v; using defaults", err)
@@ -80,7 +86,9 @@ func (ConfigAPI) Favorites() []string {
 }
 
 // SetFavorites persists script-favorite paths (atomic write).
-func (ConfigAPI) SetFavorites(favs []string) error {
+func (a *ConfigAPI) SetFavorites(favs []string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	cfg, err := config.Load()
 	if err != nil {
 		log.Printf("config: %v; overwriting with defaults", err)
@@ -91,7 +99,9 @@ func (ConfigAPI) SetFavorites(favs []string) error {
 }
 
 // Presets returns named channel presets.
-func (ConfigAPI) Presets() map[string]config.Preset {
+func (a *ConfigAPI) Presets() map[string]config.Preset {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	cfg, err := config.Load()
 	if err != nil {
 		log.Printf("config: %v; using defaults", err)
@@ -99,7 +109,56 @@ func (ConfigAPI) Presets() map[string]config.Preset {
 	if cfg.Presets == nil {
 		return map[string]config.Preset{}
 	}
-	return cfg.Presets
+	out := make(map[string]config.Preset, len(cfg.Presets))
+	for name, preset := range cfg.Presets {
+		out[name] = preset
+	}
+	return out
+}
+
+// SavePreset validates and atomically inserts or replaces one preset.
+func (a *ConfigAPI) SavePreset(name string, preset config.Preset) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Printf("config: %v; overwriting with defaults", err)
+		cfg = config.DefaultConfig()
+	}
+	if err := config.SetPreset(&cfg, name, preset); err != nil {
+		return err
+	}
+	return config.Save(cfg)
+}
+
+// DeletePreset removes one named preset.
+func (a *ConfigAPI) DeletePreset(name string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Printf("config: %v; overwriting with defaults", err)
+		cfg = config.DefaultConfig()
+	}
+	if err := config.RemovePreset(&cfg, name); err != nil {
+		return err
+	}
+	return config.Save(cfg)
+}
+
+// RenamePreset preserves the preset body under a new name.
+func (a *ConfigAPI) RenamePreset(oldName, newName string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Printf("config: %v; overwriting with defaults", err)
+		cfg = config.DefaultConfig()
+	}
+	if err := config.RenamePreset(&cfg, oldName, newName); err != nil {
+		return err
+	}
+	return config.Save(cfg)
 }
 
 // StreamAPI exposes RX backpressure telemetry to the workbench.
@@ -141,7 +200,7 @@ func main() {
 	scriptAPI := ScriptAPI{svc: script.NewScriptService(engine)}
 	streamAPI := &StreamAPI{}
 
-	mygo.Bind(Greeter{}, serialSvc, tcpSvc, scriptAPI, ConfigAPI{}, streamAPI)
+	mygo.Bind(Greeter{}, serialSvc, tcpSvc, scriptAPI, &ConfigAPI{}, streamAPI)
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{

@@ -6,8 +6,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	yaml "go.yaml.in/yaml/v3"
+	"linkdeck/internal/framing"
 )
 
 // Transports known to presets.
@@ -40,15 +42,16 @@ const (
 type FramingConfig struct {
 	Name string            `yaml:"name,omitempty"`
 	Opts map[string]string `yaml:"opts,omitempty"`
+	Spec *framing.Spec     `yaml:"spec,omitempty"`
 }
 
 // ReconnectConfig bounds TCP redial behavior. MaxAttempts <= 0 means
 // unbounded retries.
 type ReconnectConfig struct {
-	Enabled    bool `yaml:"enabled,omitempty"`
-	InitialMs  int  `yaml:"initialMs,omitempty"`
-	MaxMs      int  `yaml:"maxMs,omitempty"`
-	MaxAttempts int `yaml:"maxAttempts,omitempty"`
+	Enabled     bool `yaml:"enabled,omitempty"`
+	InitialMs   int  `yaml:"initialMs,omitempty"`
+	MaxMs       int  `yaml:"maxMs,omitempty"`
+	MaxAttempts int  `yaml:"maxAttempts,omitempty"`
 }
 
 // Preset is one named channel preset: transport selection, endpoint
@@ -101,8 +104,8 @@ func DefaultPreset() Preset {
 		Framing:       FramingConfig{Name: DefaultFraming},
 		ReadTimeoutMs: DefaultReadTimeoutMs,
 		Reconnect: ReconnectConfig{
-			InitialMs:  DefaultReconnectInitialMs,
-			MaxMs:      DefaultReconnectMaxMs,
+			InitialMs:   DefaultReconnectInitialMs,
+			MaxMs:       DefaultReconnectMaxMs,
 			MaxAttempts: DefaultReconnectAttempts,
 		},
 	}
@@ -229,6 +232,10 @@ func Resolve(preset Preset, explicit ExplicitArgs) Preset {
 	if len(preset.Framing.Opts) > 0 {
 		out.Framing.Opts = cloneMap(preset.Framing.Opts)
 	}
+	if preset.Framing.Spec != nil {
+		spec := *preset.Framing.Spec
+		out.Framing.Spec = &spec
+	}
 	if preset.ReadTimeoutMs != 0 {
 		out.ReadTimeoutMs = preset.ReadTimeoutMs
 	}
@@ -290,3 +297,100 @@ func cloneMap(m map[string]string) map[string]string {
 	return out
 }
 
+// NormalizePresetName trims and validates a user-facing preset name.
+func NormalizePresetName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", errors.New("config: preset name is empty")
+	}
+	if len(name) > 64 {
+		return "", errors.New("config: preset name must be 64 characters or fewer")
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return "", errors.New("config: preset name contains control characters")
+		}
+	}
+	return name, nil
+}
+
+// ValidatePreset rejects values that cannot produce a usable open request.
+func ValidatePreset(preset Preset) error {
+	if preset.Transport != "" &&
+		preset.Transport != TransportSerial &&
+		preset.Transport != TransportTCP {
+		return fmt.Errorf("config: unknown preset transport %q", preset.Transport)
+	}
+	if preset.Baud < 0 {
+		return errors.New("config: preset baud rate must not be negative")
+	}
+	if preset.DataBits != 0 && (preset.DataBits < 5 || preset.DataBits > 8) {
+		return errors.New("config: preset data bits must be 5-8")
+	}
+	if preset.ReadTimeoutMs < 0 {
+		return errors.New("config: preset read timeout must not be negative")
+	}
+	if preset.Reconnect.InitialMs < 0 || preset.Reconnect.MaxMs < 0 || preset.Reconnect.MaxAttempts < 0 {
+		return errors.New("config: preset reconnect values must not be negative")
+	}
+	if preset.Framing.Spec != nil {
+		if _, err := framing.New(*preset.Framing.Spec); err != nil {
+			return fmt.Errorf("config: preset framing: %w", err)
+		}
+	}
+	return nil
+}
+
+// SetPreset validates and inserts or replaces one named preset.
+func SetPreset(cfg *Config, name string, preset Preset) error {
+	name, err := NormalizePresetName(name)
+	if err != nil {
+		return err
+	}
+	if err := ValidatePreset(preset); err != nil {
+		return err
+	}
+	if cfg.Presets == nil {
+		cfg.Presets = make(map[string]Preset)
+	}
+	cfg.Presets[name] = preset
+	return nil
+}
+
+// RemovePreset deletes one named preset.
+func RemovePreset(cfg *Config, name string) error {
+	name, err := NormalizePresetName(name)
+	if err != nil {
+		return err
+	}
+	if _, ok := cfg.Presets[name]; !ok {
+		return fmt.Errorf("config: preset %q does not exist", name)
+	}
+	delete(cfg.Presets, name)
+	return nil
+}
+
+// RenamePreset atomically renames one preset while preserving its body.
+func RenamePreset(cfg *Config, oldName, newName string) error {
+	oldName, err := NormalizePresetName(oldName)
+	if err != nil {
+		return err
+	}
+	newName, err = NormalizePresetName(newName)
+	if err != nil {
+		return err
+	}
+	preset, ok := cfg.Presets[oldName]
+	if !ok {
+		return fmt.Errorf("config: preset %q does not exist", oldName)
+	}
+	if oldName == newName {
+		return nil
+	}
+	if _, exists := cfg.Presets[newName]; exists {
+		return fmt.Errorf("config: preset %q already exists", newName)
+	}
+	delete(cfg.Presets, oldName)
+	cfg.Presets[newName] = preset
+	return nil
+}

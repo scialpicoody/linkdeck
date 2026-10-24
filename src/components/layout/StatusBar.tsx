@@ -35,8 +35,8 @@ export function StatusBar({ channel, onResetCounters, dropped = 0, framingError 
             {channel.state.toUpperCase()}
           </span>
           <span className="truncate text-chrome-foreground/80">{channel.endpoint}</span>
-          {channel.baudRate !== undefined && (
-            <span className="hidden sm:inline">{channel.baudRate} BAUD</span>
+          {channel.config.baudRate > 0 && (
+            <span className="hidden sm:inline">{channel.config.baudRate} BAUD</span>
           )}
           <Hint label="Reset RX/TX counters">
             <button

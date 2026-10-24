@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"linkdeck/internal/framing"
 )
 
 func TestLoadMissingFallsBackToDefaults(t *testing.T) {
@@ -129,5 +131,81 @@ func TestConfigPath(t *testing.T) {
 	}
 	if filepath.Base(p) != "config.yaml" || filepath.Base(filepath.Dir(p)) != "linkdeck" {
 		t.Fatalf("unexpected path %s", p)
+	}
+}
+
+func TestPresetCRUD(t *testing.T) {
+	cfg := DefaultConfig()
+	spec := framing.Spec{Kind: "delimiter", DelimiterHex: "0D0A"}
+	preset := Preset{
+		Transport: TransportSerial,
+		Endpoint:  "/dev/ttyUSB0",
+		Baud:      115200,
+		Framing:   FramingConfig{Name: "delimiter", Spec: &spec},
+	}
+	if err := SetPreset(&cfg, "  bench  ", preset); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Presets["bench"]; !ok {
+		t.Fatal("trimmed preset name was not stored")
+	}
+	if err := RenamePreset(&cfg, "bench", "lab"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Presets["bench"]; ok {
+		t.Fatal("old preset name survived rename")
+	}
+	if got := cfg.Presets["lab"].Framing.Spec; got == nil || got.DelimiterHex != "0D0A" {
+		t.Fatalf("rename lost framing spec: %+v", got)
+	}
+	if err := RemovePreset(&cfg, "lab"); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Presets) != 0 {
+		t.Fatalf("preset not removed: %+v", cfg.Presets)
+	}
+	if err := RemovePreset(&cfg, "missing"); err == nil {
+		t.Fatal("removing a missing preset should fail")
+	}
+}
+
+func TestPresetValidation(t *testing.T) {
+	if err := ValidatePreset(Preset{Transport: "udp"}); err == nil {
+		t.Fatal("unknown transport should fail")
+	}
+	bad := framing.Spec{Kind: "fixed-size", FixedSize: 0}
+	if err := ValidatePreset(Preset{
+		Transport: TransportSerial,
+		Framing:   FramingConfig{Spec: &bad},
+	}); err == nil {
+		t.Fatal("invalid framing should fail")
+	}
+}
+
+func TestFramingSpecRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	spec := framing.Spec{
+		Kind:         "header-checksum",
+		HeaderHex:    "AA55",
+		LengthOffset: 2,
+		LengthWidth:  1,
+		Checksum:     "xor",
+	}
+	want := Config{Presets: map[string]Preset{
+		"framed": {
+			Transport: TransportSerial,
+			Endpoint:  "/dev/ttyUSB0",
+			Framing:   FramingConfig{Name: "header-checksum", Spec: &spec},
+		},
+	}}
+	if err := SaveTo(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec := got.Presets["framed"].Framing.Spec; spec == nil || spec.HeaderHex != "AA55" {
+		t.Fatalf("framing spec did not round trip: %+v", spec)
 	}
 }
