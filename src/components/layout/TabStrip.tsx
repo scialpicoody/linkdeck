@@ -15,14 +15,14 @@ export function TabStrip({ tabs, channels, activeId, onSelect, onClose }: TabStr
   const byId = new Map(channels.map((c) => [c.id, c]));
   if (tabs.length === 0) {
     return (
-      <div className="flex items-center border-b border-border bg-background px-3 py-2 text-sm text-muted-foreground">
-        No open channels
+      <div className="flex items-center px-3 py-2 text-sm text-muted-foreground">
+        No open channels — use + in Channels to open one.
       </div>
     );
   }
   return (
     <div
-      className="flex items-center gap-1 overflow-x-auto border-b border-border bg-background px-2 py-1.5"
+      className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-2 py-1.5"
       role="tablist"
     >
       {tabs.map((t) => {

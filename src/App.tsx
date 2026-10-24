@@ -1,8 +1,14 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Toaster, toast } from "sonner";
 import type { ChannelFormValue } from "./components/channels";
 import { ChannelDialog } from "./components/channels";
-import { type Frame, FramePanel, type SendPayload, toWireString } from "./components/frames";
+import {
+  type Frame,
+  FrameInspector,
+  FramePanel,
+  type SendPayload,
+  toWireString,
+} from "./components/frames";
 import { Sidebar } from "./components/layout/Sidebar";
 import { StatusBar } from "./components/layout/StatusBar";
 import { TabStrip } from "./components/layout/TabStrip";
@@ -12,17 +18,10 @@ import { ConfirmDialog } from "./components/ui/ConfirmDialog";
 import { HintsProvider } from "./components/ui/Hint";
 import { useChannels } from "./lib/channels";
 import { isHostAvailable } from "./lib/host";
-import { ConfigAPI, events, type Preset, SerialService } from "./mygo";
+import { ConfigAPI, type Preset, SerialService } from "./mygo";
 
-// FramePanel is the primary view (sync import: it owns the hot loop).
-// InspectorPanel stays lazy until its slide-over lands (#20).
-const InspectorPanel = lazy(() =>
-  import("./components/inspector").then((m) => ({ default: m.InspectorPanel })),
-);
-
-const PANEL_FALLBACK = (
-  <div className="grid flex-1 place-items-center text-sm text-muted-foreground">Loading…</div>
-);
+/** Main-area view: frame monitor vs script workspace (task states). */
+type MainView = "monitor" | "scripts";
 
 const DEMO_SCRIPTS: ScriptEntry[] = [
   { id: "at-probe", name: "at-probe.lua", path: "scripts/at-probe.lua", origin: "workspace" },
@@ -47,12 +46,18 @@ export default function App() {
     resetCounters,
     setChannelState,
   } = useChannels();
-  const [clock, setClock] = useState("--:--:--");
   // Per-channel TX echo frames. RX frames arrive with the framing phase,
   // which feeds this same map through a mygo event.
   const [framesByChannel, setFramesByChannel] = useState<Record<string, Frame[]>>({});
+  // Selected frame row → slide-over inspector (#20). Cleared on channel switch.
+  const [frameSelection, setFrameSelection] = useState<{ frame: Frame; index: number } | null>(
+    null,
+  );
+  const [mainView, setMainView] = useState<MainView>("monitor");
+  // Scripts view: open editor tabs (multi-tab) + per-tab sources.
+  const [openScriptIds, setOpenScriptIds] = useState<string[]>([]);
   const [selectedScriptId, setSelectedScriptId] = useState<string | null>(null);
-  const [scriptSource, setScriptSource] = useState(LUA_STARTER);
+  const [scriptSources, setScriptSources] = useState<Record<string, string>>({});
   const [outputRows, setOutputRows] = useState<ScriptOutputRow[]>([]);
   const [errorLine, setErrorLine] = useState<number | null>(null);
   const [pendingCloseId, setPendingCloseId] = useState<string | null>(null);
@@ -87,21 +92,11 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  useEffect(() => {
-    // Without the Go host there is no tick event; fall back to a local clock
-    // so the status bar still advances in browser-only mode.
-    if (!isHostAvailable()) {
-      const timer = setInterval(() => setClock(new Date().toLocaleTimeString()), 1000);
-      return () => clearInterval(timer);
-    }
-    return events.tick.on((time) => {
-      setClock(new Date(time).toLocaleTimeString());
-    });
-  }, []);
-
-  // Clear the unread badge whenever the active channel changes.
+  // Clear the unread badge and frame selection on channel switch.
   useEffect(() => {
     if (activeId !== null) markRead(activeId);
+    setFrameSelection(null);
+    setSendError(null);
   }, [activeId, markRead]);
   // Surface port-enumeration failures as a toast (sidebar shows it inline too).
   useEffect(() => {
@@ -167,6 +162,24 @@ export default function App() {
   }, []);
 
   const selectedScript = DEMO_SCRIPTS.find((s) => s.id === selectedScriptId) ?? null;
+
+  function openScriptTab(script: ScriptEntry): void {
+    setOpenScriptIds((prev) => (prev.includes(script.id) ? prev : [...prev, script.id]));
+    setSelectedScriptId(script.id);
+    setErrorLine(null);
+    setScriptSources((prev) =>
+      prev[script.id] !== undefined ? prev : { ...prev, [script.id]: LUA_STARTER },
+    );
+  }
+
+  function closeScriptTab(id: string): void {
+    setOpenScriptIds((prev) => prev.filter((t) => t !== id));
+    setSelectedScriptId((sel) => {
+      if (sel !== id) return sel;
+      const rest = openScriptIds.filter((t) => t !== id);
+      return rest.length > 0 ? (rest[rest.length - 1] as string) : null;
+    });
+  }
 
   const handleClear = useCallback(() => {
     if (active === null) return;
@@ -240,62 +253,161 @@ export default function App() {
             onEdit={(id) => setChannelDialog({ mode: "edit", id })}
           />
           <div className="flex min-w-0 flex-1 flex-col">
-            <TabStrip
-              tabs={tabs}
-              channels={channels}
-              activeId={activeId}
-              onSelect={selectChannel}
-              onClose={(id) => setPendingCloseId(id)}
-            />
+            <div className="flex min-w-0 items-stretch gap-2 border-b border-border bg-background">
+              <div
+                role="tablist"
+                aria-label="Main view"
+                className="flex shrink-0 items-center gap-1 self-center rounded-md bg-muted p-0.5"
+              >
+                {(["monitor", "scripts"] as const).map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    role="tab"
+                    aria-selected={mainView === v}
+                    onClick={() => setMainView(v)}
+                    className={
+                      mainView === v
+                        ? "rounded px-3 py-1 text-xs font-medium bg-card shadow-sm"
+                        : "rounded px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
+                    }
+                  >
+                    {v === "monitor" ? "Monitor" : "Scripts"}
+                  </button>
+                ))}
+              </div>
+              {mainView === "monitor" && (
+                <TabStrip
+                  tabs={tabs}
+                  channels={channels}
+                  activeId={activeId}
+                  onSelect={selectChannel}
+                  onClose={(id) => setPendingCloseId(id)}
+                />
+              )}
+            </div>
             <div className="flex min-h-0 flex-1">
-              <main className="flex min-w-0 flex-1 flex-col">
-                <div className="min-h-0 flex-1">
-                  <FramePanel
-                    channelName={active?.name ?? null}
-                    frames={active !== null ? (framesByChannel[active.id] ?? []) : []}
-                    onSend={handleSend}
-                    onClear={handleClear}
-                    canSend={active !== null && active.kind === "serial"}
-                    sending={sending}
-                    sendError={sendError}
+              {mainView === "monitor" ? (
+                <>
+                  <main className="flex min-w-0 flex-1 flex-col">
+                    <div className="min-h-0 flex-1">
+                      <FramePanel
+                        channelName={active?.name ?? null}
+                        frames={active !== null ? (framesByChannel[active.id] ?? []) : []}
+                        onSelectFrame={(frame, index) => setFrameSelection({ frame, index })}
+                        onSend={handleSend}
+                        onClear={handleClear}
+                        canSend={active !== null && active.kind === "serial"}
+                        sending={sending}
+                        sendError={sendError}
+                      />
+                    </div>
+                  </main>
+                  <FrameInspector
+                    selection={
+                      frameSelection !== null && active !== null
+                        ? { frame: frameSelection.frame, channelName: active.name }
+                        : null
+                    }
+                    onClose={() => setFrameSelection(null)}
                   />
-                </div>
-                <div className="flex h-64 shrink-0 border-t border-border">
-                  <div className="w-56 shrink-0 overflow-auto border-r border-border">
+                </>
+              ) : (
+                <main className="flex min-w-0 flex-1">
+                  <div className="w-64 shrink-0 overflow-auto border-r border-border">
                     <ScriptLibrary
                       workspaceScripts={DEMO_SCRIPTS}
                       selectedId={selectedScriptId}
-                      onSelect={(s) => {
-                        setSelectedScriptId(s.id);
-                        setErrorLine(null);
-                      }}
+                      onSelect={openScriptTab}
                       onRun={handleRun}
                     />
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <ScriptEditor
-                      value={scriptSource}
-                      onChange={setScriptSource}
-                      errorLine={errorLine}
-                    />
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    {openScriptIds.length === 0 ? (
+                      <div className="grid flex-1 place-items-center p-6 text-center">
+                        <p className="text-sm text-muted-foreground">
+                          Pick a script on the left to open it in a tab. The monitor stays one click
+                          away.
+                        </p>
+                      </div>
+                    ) : (
+                      <>
+                        <div
+                          role="tablist"
+                          aria-label="Open scripts"
+                          className="flex items-center gap-1 overflow-x-auto border-b border-border px-2 py-1.5"
+                        >
+                          {openScriptIds.map((id) => {
+                            const entry = DEMO_SCRIPTS.find((s) => s.id === id);
+                            const isSel = id === selectedScriptId;
+                            return (
+                              <div
+                                key={id}
+                                role="tab"
+                                aria-selected={isSel}
+                                tabIndex={0}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    setSelectedScriptId(id);
+                                    setErrorLine(null);
+                                  }
+                                }}
+                                className={`flex items-center gap-1 rounded-md border px-2 py-1 text-xs ${
+                                  isSel ? "border-border bg-card" : "border-transparent"
+                                }`}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedScriptId(id);
+                                    setErrorLine(null);
+                                  }}
+                                  className="max-w-40 truncate font-mono"
+                                >
+                                  {entry?.name ?? id}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => closeScriptTab(id)}
+                                  aria-label={`Close ${entry?.name ?? id}`}
+                                  className="rounded p-0.5 text-muted-foreground hover:bg-muted"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="min-h-0 flex-1">
+                          <ScriptEditor
+                            value={
+                              selectedScriptId !== null
+                                ? (scriptSources[selectedScriptId] ?? LUA_STARTER)
+                                : LUA_STARTER
+                            }
+                            onChange={(v) => {
+                              if (selectedScriptId !== null)
+                                setScriptSources((prev) => ({ ...prev, [selectedScriptId]: v }));
+                            }}
+                            errorLine={errorLine}
+                          />
+                        </div>
+                      </>
+                    )}
                   </div>
                   <div className="w-80 shrink-0 overflow-auto border-l border-border">
                     <ScriptOutput rows={outputRows} onErrorLine={setErrorLine} />
                   </div>
-                </div>
-                {selectedScript !== null && (
-                  <span className="sr-only">Editing {selectedScript.name}</span>
-                )}
-              </main>
-              <div className="w-80 shrink-0 border-l border-border">
-                <Suspense fallback={PANEL_FALLBACK}>
-                  <InspectorPanel />
-                </Suspense>
-              </div>
+                </main>
+              )}
+              {selectedScript !== null && (
+                <span className="sr-only">Editing {selectedScript.name}</span>
+              )}
             </div>
           </div>
         </div>
-        <StatusBar channel={active} clock={clock} onResetCounters={resetCounters} />
+        <StatusBar channel={active} onResetCounters={resetCounters} />
         <Toaster position="bottom-right" theme="system" />
         <ChannelDialog
           initial={dialogInitial}
