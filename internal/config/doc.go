@@ -1,10 +1,12 @@
-// Package config owns LinkDeck's persistent configuration: channel
-// presets and script favorites stored at
-// os.UserConfigDir()/linkdeck/config.yaml (schema v1, YAML).
+// Package config owns LinkDeck's persistent configuration: channel presets,
+// script favorites, and reusable automation definitions (schema v1, YAML).
 //
-// Load failure (missing or corrupt file) warns via the standard logger
-// and returns defaults; it never refuses to start. Save writes
-// atomically (temp file + rename) so a crash cannot leave a half-written
-// config. Resolve merges explicit open args over a preset over built-in
-// defaults for the UI favorites seam to plug into.
+// Configuration resolves in layers: an explicit LINKDECK_CONFIG path, a
+// portable config.yaml beside the executable, then
+// os.UserConfigDir()/linkdeck/config.yaml. The first existing file is
+// authoritative. A missing file is a normal first-run state and returns
+// defaults; a corrupt file also returns defaults, with an error for the
+// caller to report, and never refuses to start. Save writes atomically (temp
+// file + rename) so a crash cannot leave a half-written config. Resolve
+// merges explicit open args over a preset over built-in defaults.
 package config

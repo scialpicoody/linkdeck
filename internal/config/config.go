@@ -3,7 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +17,13 @@ const (
 	TransportTCP       = "tcp" // legacy alias for tcp-client
 	TransportTCPClient = "tcp-client"
 	TransportTCPServer = "tcp-server"
+)
+
+const (
+	// ConfigFileName is the YAML file used by every configuration layer.
+	ConfigFileName = "config.yaml"
+	// ConfigPathEnv overrides configuration discovery with one explicit file.
+	ConfigPathEnv = "LINKDECK_CONFIG"
 )
 
 // Default open parameters applied when neither preset nor explicit args
@@ -129,42 +135,107 @@ func DefaultConfig() Config {
 	}
 }
 
-// ConfigPath reports os.UserConfigDir()/linkdeck/config.yaml.
+// ConfigPath reports the highest-priority configuration file. An existing
+// portable file beside the executable wins over the per-user file; when no
+// file exists, the preferred path is returned so Save can create it.
 func ConfigPath() (string, error) {
-	dir, err := os.UserConfigDir()
+	paths, err := ConfigPaths()
 	if err != nil {
-		return "", fmt.Errorf("config: user config dir: %w", err)
+		return "", err
 	}
-	return filepath.Join(dir, "linkdeck", "config.yaml"), nil
+	return selectConfigPath(paths), nil
 }
 
-// Load reads the default path, logs the path on load, and falls back to
-// defaults (with a warning, never fatal) when the file is missing or
-// corrupt.
+// ConfigPaths returns configuration files from highest to lowest priority:
+// an explicit LINKDECK_CONFIG override, the portable file beside the
+// executable, and finally the per-user file. mygo development builds skip the
+// portable layer because its executable lives in an ephemeral staging bundle.
+func ConfigPaths() ([]string, error) {
+	userDir, userErr := os.UserConfigDir()
+	exe, exeErr := os.Executable()
+	override := strings.TrimSpace(os.Getenv(ConfigPathEnv))
+	paths := configCandidates(exe, userDir, override, os.Getenv("MYGO_DEV") == "1")
+	if len(paths) > 0 {
+		return paths, nil
+	}
+	if userErr != nil {
+		return nil, fmt.Errorf("config: user config dir: %w", userErr)
+	}
+	if exeErr != nil {
+		return nil, fmt.Errorf("config: executable path: %w", exeErr)
+	}
+	return nil, errors.New("config: no configuration path available")
+}
+
+func configCandidates(exe, userDir, override string, dev bool) []string {
+	paths := make([]string, 0, 3)
+	seen := make(map[string]struct{}, 3)
+	add := func(path string) {
+		if strings.TrimSpace(path) == "" {
+			return
+		}
+		path = filepath.Clean(path)
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	add(override)
+	if override != "" {
+		return paths
+	}
+	if !dev && exe != "" {
+		add(filepath.Join(filepath.Dir(exe), ConfigFileName))
+	}
+	if userDir != "" {
+		add(filepath.Join(userDir, "linkdeck", ConfigFileName))
+	}
+	return paths
+}
+
+func selectConfigPath(paths []string) string {
+	for _, path := range paths {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path
+		}
+	}
+	if len(paths) > 0 {
+		return paths[0]
+	}
+	return ""
+}
+
+// Load resolves the configuration hierarchy and reads the first existing file.
+// Missing files are a normal first-run state; corrupt files fall back to
+// defaults and return an error for the caller to report.
 func Load() (Config, error) {
-	path, err := ConfigPath()
+	paths, err := ConfigPaths()
 	if err != nil {
-		log.Printf("config: %v; running on defaults", err)
 		return DefaultConfig(), err
 	}
-	return LoadFrom(path)
+	return loadCandidates(paths)
 }
 
-// LoadFrom reads path with the same warn-and-defaults contract as Load.
+func loadCandidates(paths []string) (Config, error) {
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if errors.Is(err, os.ErrNotExist) || err == nil && info.IsDir() {
+			continue
+		}
+		return LoadFrom(path)
+	}
+	return DefaultConfig(), nil
+}
+
+// LoadFrom reads one explicit path and returns defaults on failure.
 func LoadFrom(path string) (Config, error) {
-	log.Printf("config: loading %s", path)
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			log.Printf("config: %s missing; running on defaults", path)
-		} else {
-			log.Printf("config: read %s: %v; running on defaults", path, err)
-		}
 		return DefaultConfig(), err
 	}
 	var cfg Config
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		log.Printf("config: parse %s: %v; running on defaults", path, err)
 		return DefaultConfig(), err
 	}
 	if cfg.Presets == nil {
@@ -185,11 +256,33 @@ func LoadFrom(path string) (Config, error) {
 // Save writes cfg to the default path atomically (temp file in the same
 // directory + rename) so a crash cannot leave a half-written config.
 func Save(cfg Config) error {
-	path, err := ConfigPath()
+	paths, err := ConfigPaths()
 	if err != nil {
 		return err
 	}
-	return SaveTo(path, cfg)
+	target := selectConfigPath(paths)
+	if target == "" {
+		return errors.New("config: no configuration path available")
+	}
+	if err := SaveTo(target, cfg); err == nil {
+		return nil
+	} else if target != paths[0] || len(paths) == 1 {
+		return err
+	}
+	// A portable install location may be read-only, such as an app bundle in
+	// /Applications. Preserve startup and persistence by trying the per-user
+	// layer when creating the preferred file failed.
+	var firstErr error
+	for _, fallback := range paths[1:] {
+		if err := SaveTo(fallback, cfg); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		return nil
+	}
+	return firstErr
 }
 
 // SaveTo writes cfg to path atomically via temp file + rename.

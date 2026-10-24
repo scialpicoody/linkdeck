@@ -319,6 +319,13 @@ to make an empty workbench look populated.
 
 ## Operational guarantees
 
+- Configuration resolves from `LINKDECK_CONFIG`, then a portable `config.yaml`
+  beside the executable, then the per-user config directory. The first existing
+  file is authoritative; missing files use defaults without an error.
+- Presets, favorites, Commands, and Sequences share one schema-v1 YAML document
+  with top-level sections for each capability. See
+  `docs/design/configuration.md`.
+
 - The host publishes batched `channel-status` snapshots every 500 ms; the
   frontend also polls serial and TCP state every 3 seconds as a fallback.
 - Serial removal and TCP drops preserve channel identity, counters, and frame

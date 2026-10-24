@@ -131,10 +131,101 @@ func TestResolveNoAlias(t *testing.T) {
 func TestConfigPath(t *testing.T) {
 	p, err := ConfigPath()
 	if err != nil {
-		t.Skipf("no user config dir: %v", err)
+		t.Skipf("no configuration path: %v", err)
 	}
-	if filepath.Base(p) != "config.yaml" || filepath.Base(filepath.Dir(p)) != "linkdeck" {
+	if filepath.Base(p) != ConfigFileName {
 		t.Fatalf("unexpected path %s", p)
+	}
+}
+
+func TestConfigCandidates(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "bin", "linkdeck")
+	userDir := filepath.Join(t.TempDir(), "user")
+	override := filepath.Join(t.TempDir(), "override.yaml")
+
+	paths := configCandidates(exe, userDir, override, false)
+	if !reflect.DeepEqual(paths, []string{override}) {
+		t.Fatalf("explicit paths = %#v, want only %s", paths, override)
+	}
+
+	paths = configCandidates(exe, userDir, "", false)
+	want := []string{
+		filepath.Join(filepath.Dir(exe), ConfigFileName),
+		filepath.Join(userDir, "linkdeck", ConfigFileName),
+	}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("paths = %#v, want %#v", paths, want)
+	}
+
+	dev := configCandidates(exe, userDir, "", true)
+	if len(dev) != 1 || dev[0] != want[1] {
+		t.Fatalf("dev paths = %#v, want only %s", dev, want[1])
+	}
+}
+
+func TestSelectConfigPathPrefersFirstExisting(t *testing.T) {
+	dir := t.TempDir()
+	portable := filepath.Join(dir, "portable", ConfigFileName)
+	userPath := filepath.Join(dir, "user", ConfigFileName)
+	if err := SaveTo(userPath, DefaultConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if got := selectConfigPath([]string{portable, userPath}); got != userPath {
+		t.Fatalf("selected %s, want existing %s", got, userPath)
+	}
+	if got := selectConfigPath([]string{portable, userPath}); got == portable {
+		t.Fatalf("selected missing preferred path %s", portable)
+	}
+	if err := SaveTo(portable, DefaultConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if got := selectConfigPath([]string{portable, userPath}); got != portable {
+		t.Fatalf("selected %s, want preferred %s", got, portable)
+	}
+}
+
+func TestLoadCandidatesSkipsMissingFiles(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.yaml")
+	existing := filepath.Join(dir, "config.yaml")
+	want := DefaultConfig()
+	want.Favorites = []string{"bench.lua"}
+	if err := SaveTo(existing, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadCandidates([]string{missing, existing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Favorites, want.Favorites) {
+		t.Fatalf("favorites = %#v, want %#v", got.Favorites, want.Favorites)
+	}
+}
+
+func TestLoadCandidatesMissingUsesDefaults(t *testing.T) {
+	got, err := loadCandidates([]string{filepath.Join(t.TempDir(), "missing.yaml")})
+	if err != nil {
+		t.Fatalf("missing config should not fail startup: %v", err)
+	}
+	if !reflect.DeepEqual(got, DefaultConfig()) {
+		t.Fatalf("missing config = %+v, want defaults", got)
+	}
+}
+
+func TestLoadUsesExplicitConfigPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "linkdeck.yaml")
+	want := DefaultConfig()
+	want.Favorites = []string{"explicit.lua"}
+	if err := SaveTo(path, want); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(ConfigPathEnv, path)
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Favorites, want.Favorites) {
+		t.Fatalf("favorites = %#v, want %#v", got.Favorites, want.Favorites)
 	}
 }
 

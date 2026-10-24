@@ -1,0 +1,61 @@
+# LinkDeck configuration (schema v1).
+#
+# `mygo build` ships this file beside the app icon. Copy it to `config.yaml`
+# beside the packaged executable to use a portable configuration, or to the
+# per-user configuration directory when running the installed app:
+#
+#   macOS:   ~/Library/Application Support/linkdeck/config.yaml
+#   Linux:   ~/.config/linkdeck/config.yaml
+#   Windows: %AppData%\linkdeck\config.yaml
+#
+# The first existing file wins. `LINKDECK_CONFIG` can point at another file.
+
+presets:
+  bench:
+    transport: serial
+    endpoint: /dev/ttyUSB0
+    baud: 115200
+    dataBits: 8
+    parity: none
+    stopBits: "1"
+    framing:
+      name: delimiter
+      opts:
+        delimiter: "\n"
+    readTimeoutMs: 1000
+
+  device:
+    transport: tcp-client
+    endpoint: 127.0.0.1:9000
+    framing:
+      name: length-prefix
+    reconnect:
+      enabled: true
+      initialMs: 100
+      maxMs: 5000
+      maxAttempts: 0
+
+favorites:
+  - hello.lua
+
+automation:
+  commands:
+    - name: Ping
+      codec: ascii
+      payload: ping
+      lineEnding: lf
+      description: Small reachability probe.
+  sequences:
+    - name: Poll status
+      description: Ask for status three times.
+      repeat: 3
+      intervalMs: 250
+      steps:
+        - kind: send
+          codec: ascii
+          payload: status?
+          lineEnding: lf
+        - kind: expect
+          mode: prefix
+          pattern: OK
+          timeoutMs: 1000
