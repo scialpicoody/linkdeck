@@ -1,23 +1,19 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { Toaster, toast } from "sonner";
+import { type Frame, FramePanel } from "./components/frames";
 import { Sidebar } from "./components/layout/Sidebar";
 import { StatusBar } from "./components/layout/StatusBar";
 import { TabStrip } from "./components/layout/TabStrip";
 import type { ScriptEntry, ScriptOutputRow } from "./components/scripts";
 import { ScriptEditor, ScriptLibrary, ScriptOutput } from "./components/scripts";
-import type { Frame } from "./components/terminal";
 import { ConfirmDialog } from "./components/ui/ConfirmDialog";
 import { HintsProvider } from "./components/ui/Hint";
 import { useChannels } from "./lib/channels";
 import { isHostAvailable } from "./lib/host";
 import { events, SerialService } from "./mygo";
 
-// Real wave-2 panels. Props contracts:
-// <TerminalPanel channel frames onSend>, <InspectorPanel /> (defaults until
-// the open/config flow and frame selection land in later phases).
-const TerminalPanel = lazy(() =>
-  import("./components/terminal").then((m) => ({ default: m.TerminalPanel })),
-);
+// FramePanel is the primary view (sync import: it owns the hot loop).
+// InspectorPanel stays lazy until its slide-over lands (#20).
 const InspectorPanel = lazy(() =>
   import("./components/inspector").then((m) => ({ default: m.InspectorPanel })),
 );
@@ -127,9 +123,11 @@ export default function App() {
 
   const selectedScript = DEMO_SCRIPTS.find((s) => s.id === selectedScriptId) ?? null;
 
-  // TerminalChannel duck-types on name/port strings; Channel carries PortInfo
-  // in port, so project the fields the terminal reads.
-  const terminalChannel = active ? { kind: active.kind, name: active.name, id: active.id } : null;
+  const handleClear = useCallback(() => {
+    if (active === null) return;
+    const id = active.id;
+    setFramesByChannel((prev) => ({ ...prev, [id]: [] }));
+  }, [active]);
 
   return (
     <HintsProvider>
@@ -154,13 +152,13 @@ export default function App() {
             <div className="flex min-h-0 flex-1">
               <main className="flex min-w-0 flex-1 flex-col">
                 <div className="min-h-0 flex-1">
-                  <Suspense fallback={PANEL_FALLBACK}>
-                    <TerminalPanel
-                      channel={terminalChannel}
-                      frames={active !== null ? (framesByChannel[active.id] ?? []) : []}
-                      onSend={handleSend}
-                    />
-                  </Suspense>
+                  <FramePanel
+                    channelName={active?.name ?? null}
+                    frames={active !== null ? (framesByChannel[active.id] ?? []) : []}
+                    onSend={handleSend}
+                    onClear={handleClear}
+                    canSend={active !== null && active.kind === "serial"}
+                  />
                 </div>
                 <div className="flex h-64 shrink-0 border-t border-border">
                   <div className="w-56 shrink-0 overflow-auto border-r border-border">
